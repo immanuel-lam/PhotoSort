@@ -6,7 +6,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from photosort.engine import MISC_FOLDER, sort_files
+from photosort.engine import (
+    MISC_FOLDER,
+    UNDO_BAT_FILENAME,
+    UNDO_SH_FILENAME,
+    sort_files,
+)
 from photosort.models import (
     DATE_FORMAT_PRESETS,
     DEFAULT_DATE_FORMAT,
@@ -268,9 +273,16 @@ def main() -> None:
     action = "Would move" if args.dry_run else "Moved"
     print(f"\n{_BAR_HEAVY*62}")
     print(f"  {action}: {result.moved} file(s)  |  Duplicates: {result.duplicates}  |  Errors: {result.errors}")
+    if result.skipped:
+        _skip_icon = "⊘ " if _UTF8 else "--"
+        print(f"  {_skip_icon} Skipped: {result.skipped} file(s) (matched .photosort-skip patterns)")
     _warn = "⚠ " if _UTF8 else "[!]"
     if result.proximity_warnings:
         print(f"  {_warn}  {result.proximity_warnings} video(s) matched by proximity with low confidence (>10 min gap)")
+    if result.by_extension:
+        parts = sorted(result.by_extension.items(), key=lambda x: -x[1])
+        ext_str = ", ".join(f"{count} {ext}" for ext, count in parts)
+        print(f"  {ext_str} sorted")
     print(f"  Date sources — " + "  ".join(
         f"{k.upper()}: {v}" for k, v in result.by_source.items() if v
     ))
@@ -311,6 +323,11 @@ def main() -> None:
     if misc_report_path:
         label = f"[DRY RUN] Would write → {MISC_REPORT_FILENAME}" if args.dry_run else str(misc_report_path)
         print(f"  Misc report           → {label}")
+
+    if not args.dry_run and result.undo_log:
+        print(f"  Undo scripts          → {UNDO_SH_FILENAME}  /  {UNDO_BAT_FILENAME}")
+    elif args.dry_run and result.total_files > 0:
+        print(f"  Undo scripts          → [DRY RUN] Would write → {UNDO_SH_FILENAME}  /  {UNDO_BAT_FILENAME}")
 
     print(f"{_BAR_HEAVY*62}\n")
 

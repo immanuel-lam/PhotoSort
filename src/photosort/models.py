@@ -77,9 +77,12 @@ class SortResult:
     moved: int = 0
     duplicates: int = 0
     errors: int = 0
-    proximity_warnings: int = 0          # videos matched by proximity with low confidence
+    skipped: int = 0                       # files skipped via .photosort-skip
+    proximity_warnings: int = 0            # videos matched by proximity with low confidence
     by_source: dict[str, int] = field(default_factory=lambda: {
         s.value: 0 for s in DateSource
     })
     by_device: dict[str, int] = field(default_factory=dict)
+    by_extension: dict[str, int] = field(default_factory=dict)
+    undo_log: list[tuple[str, str]] = field(default_factory=list)
     records: list[FileRecord] = field(default_factory=list)
