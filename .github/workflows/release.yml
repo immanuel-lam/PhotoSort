@@ -34,14 +34,16 @@ jobs:
       - name: Package DMG
         run: |
           brew install create-dmg
+          python scripts/dmg_background.py dmg_background.png
           create-dmg \
             --volname "PhotoSort" \
+            --background "dmg_background.png" \
             --window-pos 200 120 \
             --window-size 600 380 \
             --icon-size 100 \
-            --icon "PhotoSort.app" 175 175 \
+            --icon "PhotoSort.app" 160 165 \
             --hide-extension "PhotoSort.app" \
-            --app-drop-link 425 175 \
+            --app-drop-link 440 165 \
             "PhotoSort-macos-arm64.dmg" \
             "dist/PhotoSort.app"
       - uses: actions/upload-artifact@v4
