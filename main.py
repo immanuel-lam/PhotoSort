@@ -17,12 +17,6 @@ from pathlib import Path
 # modules are already embedded. multiprocessing.freeze_support() is required on
 # Windows to prevent the frozen executable from re-spawning itself infinitely.
 
-if getattr(sys, 'frozen', False):
-    import multiprocessing
-    multiprocessing.freeze_support()
-    _run_app()
-    sys.exit(0)
-
 # ── Development / zero-setup path ─────────────────────────────────────────────
 
 _HERE    = Path(__file__).parent
@@ -93,6 +87,17 @@ def _run_app():
         from photosort.gui.app import main
         main()
 
+
+# ── PyInstaller frozen bundle ─────────────────────────────────────────────────
+# sys.frozen is set by PyInstaller. Skip the venv bootstrap entirely — all
+# modules are already embedded. multiprocessing.freeze_support() is required on
+# Windows to prevent the frozen executable from re-spawning itself infinitely.
+
+if getattr(sys, 'frozen', False):
+    import multiprocessing
+    multiprocessing.freeze_support()
+    _run_app()
+    sys.exit(0)
 
 if not _already_in_managed_venv():
     _bootstrap()
