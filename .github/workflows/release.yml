@@ -32,6 +32,9 @@ jobs:
             --add-data "src/photosort:photosort" \
             --paths src \
             --collect-all customtkinter \
+            --collect-all tkinter \
+            --hidden-import tkinter \
+            --hidden-import _tkinter \
             main.py
 
       - name: Rename artifact
@@ -65,6 +68,9 @@ jobs:
             --add-data "src/photosort;photosort" `
             --paths src `
             --collect-all customtkinter `
+            --collect-all tkinter `
+            --hidden-import tkinter `
+            --hidden-import _tkinter `
             --noconsole `
             main.py
 
