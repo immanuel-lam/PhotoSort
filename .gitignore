@@ -8,3 +8,12 @@ venv/
 *.egg
 .DS_Store
 *.spec
+
+# IDE
+.idea/
+.vscode/
+
+# Internal dev files
+plan.md
+CLAUDE.md
+sort_photos.py
