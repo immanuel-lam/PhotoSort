@@ -1,0 +1,100 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ── macOS arm64 ────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-14          # Apple Silicon (arm64) runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install Pillow customtkinter hachoir pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller \
+            --onefile \
+            --name PhotoSort \
+            --add-data "src/photosort:photosort" \
+            --paths src \
+            --collect-all customtkinter \
+            main.py
+
+      - name: Rename artifact
+        run: mv dist/PhotoSort dist/PhotoSort-macos-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoSort-macos-arm64
+          path: dist/PhotoSort-macos-arm64
+
+  # ── Windows x64 ────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install Pillow customtkinter hachoir pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller `
+            --onefile `
+            --name PhotoSort `
+            --add-data "src/photosort;photosort" `
+            --paths src `
+            --collect-all customtkinter `
+            --noconsole `
+            main.py
+
+      - name: Rename artifact
+        run: mv dist\PhotoSort.exe dist\PhotoSort-windows-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoSort-windows-x64
+          path: dist\PhotoSort-windows-x64.exe
+
+  # ── GitHub Release ──────────────────────────────────────────────────────────
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PhotoSort-macos-arm64
+          path: artifacts/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: PhotoSort-windows-x64
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/PhotoSort-macos-arm64
+            artifacts/PhotoSort-windows-x64.exe
+          generate_release_notes: true
