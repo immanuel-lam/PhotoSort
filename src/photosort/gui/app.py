@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from tkinter import messagebox
 from typing import Optional
@@ -22,16 +23,33 @@ _MONO_FONT = "Consolas" if sys.platform == "win32" else (
     "Menlo" if sys.platform == "darwin" else "DejaVu Sans Mono"
 )
 
+# Appearance mode cycling order and labels
+_APPEARANCE_MODES = ["System", "Light", "Dark"]
+_APPEARANCE_LABELS = {"System": "System", "Light": "Light", "Dark": "Dark"}
+
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("PhotoSort")
         self.resizable(True, True)
-        self.minsize(680, 720)
+        self.minsize(700, 740)
 
         self._worker: Optional[SortWorker] = None
         self._total_media = 0
+
+        # Timing state
+        self._sort_start_time: Optional[float] = None
+        self._sort_active = False
+
+        # Error tracking for badge
+        self._error_count = 0
+
+        # Appearance cycling
+        self._appearance_idx = 0   # index into _APPEARANCE_MODES
+
+        # Scan-phase flag (for indeterminate → determinate progress bar switch)
+        self._scan_phase = False
 
         self._build_ui()
 
@@ -44,26 +62,43 @@ class App(ctk.CTk):
 
         row = 0
 
-        # Title
+        # ── Title row: app name + dark/light toggle ───────────────────────────
+        title_row = ctk.CTkFrame(outer, fg_color="transparent")
+        title_row.grid(row=row, column=0, sticky="ew", pady=(0, 16))
+        title_row.columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            outer, text="PhotoSort",
+            title_row, text="PhotoSort",
             font=ctk.CTkFont(size=22, weight="bold"),
-        ).grid(row=row, column=0, sticky="w", pady=(0, 16))
+        ).grid(row=0, column=0, sticky="w")
+
+        self._appearance_btn = ctk.CTkButton(
+            title_row,
+            text="System Mode",
+            width=110,
+            height=28,
+            fg_color=("gray78", "gray28"),
+            hover_color=("gray68", "gray38"),
+            text_color=("gray15", "gray90"),
+            font=ctk.CTkFont(size=12),
+            command=self._cycle_appearance,
+        )
+        self._appearance_btn.grid(row=0, column=1, sticky="e")
         row += 1
 
-        # Input folder
+        # ── Input folder ──────────────────────────────────────────────────────
         self._input_picker = FolderPicker(
             outer, label="Input Folder", on_change=self._on_input_change
         )
         self._input_picker.grid(row=row, column=0, sticky="ew", pady=(0, 12))
         row += 1
 
-        # Output folder
+        # ── Output folder ─────────────────────────────────────────────────────
         self._output_picker = FolderPicker(outer, label="Output Folder")
         self._output_picker.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         row += 1
 
-        # Options card
+        # ── Options card ──────────────────────────────────────────────────────
         options_card = ctk.CTkFrame(outer)
         options_card.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         options_card.columnconfigure(0, weight=1)
@@ -102,7 +137,7 @@ class App(ctk.CTk):
             variable=self._dry_run_var,
         ).pack(side="left")
 
-        # Buttons row: Sort + Pause/Resume
+        # ── Buttons row: Sort + Pause/Resume ─────────────────────────────────
         btn_row = ctk.CTkFrame(outer, fg_color="transparent")
         btn_row.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         btn_row.columnconfigure(0, weight=1)
@@ -123,24 +158,58 @@ class App(ctk.CTk):
         )
         self._pause_btn.grid(row=0, column=1, sticky="e")
 
-        # Scan + sort progress
+        # ── Progress label ────────────────────────────────────────────────────
         self._progress_label = ctk.CTkLabel(outer, text="", font=ctk.CTkFont(size=12))
-        self._progress_label.grid(row=row, column=0, sticky="w", pady=(0, 4))
+        self._progress_label.grid(row=row, column=0, sticky="w", pady=(0, 2))
         row += 1
 
+        # ── Progress bar (switches between indeterminate ↔ determinate) ───────
         self._progress_bar = ctk.CTkProgressBar(outer, height=16)
         self._progress_bar.set(0)
-        self._progress_bar.grid(row=row, column=0, sticky="ew", pady=(0, 16))
+        self._progress_bar.grid(row=row, column=0, sticky="ew", pady=(0, 4))
         row += 1
 
-        # Log
+        # ── Timing / ETA row ──────────────────────────────────────────────────
+        timing_row = ctk.CTkFrame(outer, fg_color="transparent")
+        timing_row.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        timing_row.columnconfigure(0, weight=1)
+        row += 1
+
+        self._elapsed_label = ctk.CTkLabel(
+            timing_row, text="",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        )
+        self._elapsed_label.grid(row=0, column=0, sticky="w")
+
+        self._eta_label = ctk.CTkLabel(
+            timing_row, text="",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        )
+        self._eta_label.grid(row=0, column=1, sticky="e")
+
+        # ── Log header: title + Clear button ─────────────────────────────────
+        log_header = ctk.CTkFrame(outer, fg_color="transparent")
+        log_header.grid(row=row, column=0, sticky="ew", pady=(0, 4))
+        log_header.columnconfigure(0, weight=1)
+        row += 1
+
         ctk.CTkLabel(
-            outer, text="Log",
+            log_header, text="Log",
             font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=row, column=0, sticky="w", pady=(0, 4))
-        row += 1
+        ).grid(row=0, column=0, sticky="w")
 
-        self._log_box = ctk.CTkTextbox(outer, height=220, font=ctk.CTkFont(family=_MONO_FONT, size=12))
+        ctk.CTkButton(
+            log_header, text="Clear Log", width=80, height=26,
+            fg_color=("gray78", "gray28"),
+            hover_color=("gray65", "gray40"),
+            text_color=("gray15", "gray85"),
+            font=ctk.CTkFont(size=11),
+            command=self._clear_log,
+        ).grid(row=0, column=1, sticky="e")
+
+        self._log_box = ctk.CTkTextbox(
+            outer, height=220, font=ctk.CTkFont(family=_MONO_FONT, size=12)
+        )
         self._log_box.grid(row=row, column=0, sticky="ew", pady=(0, 8))
         self._log_box.configure(state="disabled")
         row += 1
@@ -149,21 +218,52 @@ class App(ctk.CTk):
         self._summary_label.grid(row=row, column=0, sticky="w", pady=(0, 16))
         row += 1
 
-        # Errors (hidden until needed)
+        # ── Errors panel (hidden until needed) ────────────────────────────────
         self._error_header = ctk.CTkLabel(
             outer, text="Errors",
             font=ctk.CTkFont(size=14, weight="bold"),
-            text_color="red",
+            text_color=("#cc2200", "#ff5555"),
         )
         self._error_box = ctk.CTkTextbox(
             outer, height=100,
             font=ctk.CTkFont(family=_MONO_FONT, size=12),
-            text_color="red",
+            text_color=("#cc2200", "#ff5555"),
         )
         self._error_box.configure(state="disabled")
         self._error_row_header = row
         self._error_row_box    = row + 1
         self._outer = outer
+
+    # ── Appearance toggle ─────────────────────────────────────────────────────
+
+    def _cycle_appearance(self):
+        """Cycle through System → Light → Dark → System …"""
+        self._appearance_idx = (self._appearance_idx + 1) % len(_APPEARANCE_MODES)
+        mode = _APPEARANCE_MODES[self._appearance_idx]
+        ctk.set_appearance_mode(mode)
+        self._appearance_btn.configure(text=f"{mode} Mode")
+
+    # ── Elapsed timer ─────────────────────────────────────────────────────────
+
+    def _tick_elapsed(self):
+        """Called every second to refresh the elapsed-time label."""
+        if not self._sort_active:
+            return
+        if self._sort_start_time is not None:
+            elapsed = time.monotonic() - self._sort_start_time
+            self._elapsed_label.configure(text=f"Elapsed: {self._fmt_duration(elapsed)}")
+        self.after(1000, self._tick_elapsed)
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        s = int(seconds)
+        if s < 60:
+            return f"{s}s"
+        m, s = divmod(s, 60)
+        if m < 60:
+            return f"{m}m {s:02d}s"
+        h, m = divmod(m, 60)
+        return f"{h}h {m:02d}m {s:02d}s"
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -247,11 +347,24 @@ class App(ctk.CTk):
     def _start_sort(self, config: SortConfig):
         self._sort_btn.configure(state="disabled", text="Sorting…")
         self._pause_btn.configure(state="normal", text="Pause")
-        self._progress_bar.set(0)
+
+        # Indeterminate progress bar during the scan phase
+        self._scan_phase = True
+        self._progress_bar.configure(mode="indeterminate")
+        self._progress_bar.start()
         self._progress_label.configure(text="Scanning for media files…")
+
         self._clear_log()
         self._hide_errors()
         self._summary_label.configure(text="")
+        self._error_count = 0
+        self._elapsed_label.configure(text="")
+        self._eta_label.configure(text="")
+
+        # Start elapsed-time ticker
+        self._sort_start_time = time.monotonic()
+        self._sort_active = True
+        self._tick_elapsed()
 
         self._worker = SortWorker(
             config=config,
@@ -283,11 +396,33 @@ class App(ctk.CTk):
         self._progress_label.configure(text=f"Scanning… {count:,} files found")
 
     def _update_progress(self, current: int, total: int, record: FileRecord):
+        # First real progress update: switch from indeterminate → determinate
+        if self._scan_phase:
+            self._scan_phase = False
+            self._progress_bar.stop()
+            self._progress_bar.configure(mode="determinate")
+            self._progress_bar.set(0)
+
         if total > 0:
             self._progress_bar.set(current / total)
+
+        remaining = total - current
         self._progress_label.configure(text=f"{current:,} / {total:,} files processed")
 
+        # Live ETA
+        if self._sort_start_time is not None and current > 0:
+            elapsed = time.monotonic() - self._sort_start_time
+            rate = current / elapsed  # files per second
+            if rate > 0 and remaining > 0:
+                eta_sec = remaining / rate
+                self._eta_label.configure(
+                    text=f"{remaining:,} remaining  ·  ETA {self._fmt_duration(eta_sec)}"
+                )
+            else:
+                self._eta_label.configure(text="")
+
         if record.error:
+            self._error_count += 1
             self._append_log(f"ERROR  {record.source_path.name}: {record.error}\n", color="red")
             self._append_error(f"{record.source_path.name}: {record.error}\n")
         elif record.proximity_warning:
@@ -308,10 +443,16 @@ class App(ctk.CTk):
                 record.date_source.value.upper().ljust(8) if record.date_source else "?".ljust(8)
             )
             dest_str = str(record.dest_path) if record.dest_path else "?"
-            hash_str = f"  [{record.sha256[:8]}…]" if record.sha256 else ""
+            hash_str = f"  [{record.sha256[:8]}...]" if record.sha256 else ""
             self._append_log(f"[{current}/{total}] {tag}  {record.source_path.name} → {dest_str}{hash_str}\n")
 
     def _finish(self, result: SortResult):
+        # Stop the live timer and show final elapsed time
+        self._sort_active = False
+        elapsed = time.monotonic() - self._sort_start_time if self._sort_start_time else 0
+        self._elapsed_label.configure(text=f"Completed in {self._fmt_duration(elapsed)}")
+        self._eta_label.configure(text="")
+
         self._progress_bar.set(1)
         action = "Would move" if result.moved == 0 and result.total_files > 0 else "Moved"
 
@@ -320,10 +461,11 @@ class App(ctk.CTk):
         check    = "[OK] 1:1" if actual == expected else f"[!] {actual}/{expected}"
 
         warn_str = f"  |  [!] {result.proximity_warnings} prox. warning(s)" if result.proximity_warnings else ""
+        err_badge = f"Errors: {result.errors} (!)" if result.errors else "Errors: 0"
         self._summary_label.configure(
             text=(
                 f"{action}: {result.moved}  |  Duplicates: {result.duplicates}  |  "
-                f"Errors: {result.errors}  |  {check}{warn_str}"
+                f"{err_badge}  |  {check}{warn_str}"
             )
         )
 
@@ -351,17 +493,18 @@ class App(ctk.CTk):
 
             unmatched = generate_unmatched_report(out, dry_run=dry)
             if unmatched:
-                self._append_log(f"\n{note}Unmatched video report → {unmatched}\n")
+                self._append_log(f"\n{note}Unmatched video report -> {unmatched}\n")
 
             dup_rep = generate_duplicate_report(out, dry_run=dry)
             if dup_rep:
-                self._append_log(f"{note}Duplicate report       → {dup_rep}\n")
+                self._append_log(f"{note}Duplicate report       -> {dup_rep}\n")
 
             misc_rep = generate_misc_report(out, dry_run=dry)
             if misc_rep:
-                self._append_log(f"{note}Misc report            → {misc_rep}\n")
+                self._append_log(f"{note}Misc report            -> {misc_rep}\n")
 
     def _reset_buttons(self):
+        self._sort_active = False  # stop timer if still running (e.g. error path)
         self._sort_btn.configure(state="normal", text="Sort Files")
         self._pause_btn.configure(
             state="disabled", text="Pause",
@@ -392,6 +535,8 @@ class App(ctk.CTk):
         self._error_box.configure(state="disabled")
 
     def _show_errors(self):
+        badge = f" ({self._error_count})" if self._error_count > 0 else ""
+        self._error_header.configure(text=f"Errors{badge}")
         self._error_header.grid(
             row=self._error_row_header, column=0, sticky="w", pady=(0, 4), in_=self._outer
         )
