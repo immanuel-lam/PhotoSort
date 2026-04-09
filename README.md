@@ -24,10 +24,14 @@ sorted/
 
 Download the latest release for your platform from the [Releases](../../releases) page — no Python required.
 
-| Platform | File |
-|---|---|
-| macOS (Apple Silicon) | `PhotoSort-macos-arm64` |
-| Windows 64-bit | `PhotoSort-windows-x64.exe` |
+| Platform | File | Notes |
+|---|---|---|
+| macOS — Apple Silicon | `PhotoSort-macos-arm64` | M1/M2/M3/M4 |
+| macOS — Intel | `PhotoSort-macos-x64` | 2019 and earlier Macs |
+| macOS — Universal | `PhotoSort-macos-universal` | Runs natively on both |
+| Windows — x64 | `PhotoSort-windows-x64.exe` | Intel/AMD 64-bit |
+| Windows — arm64 | `PhotoSort-windows-arm64.exe` | Snapdragon/ARM devices |
+| Windows — Universal | `PhotoSort-windows-universal.zip` | Contains both .exe files |
 
 Or run directly with Python:
 
