@@ -8,16 +8,27 @@ PhotoSort — run directly without any manual setup.
 A local .venv is created and dependencies are installed automatically on first run.
 """
 
-import os
 import subprocess
 import sys
 from pathlib import Path
+
+# ── PyInstaller frozen bundle ─────────────────────────────────────────────────
+# sys.frozen is set by PyInstaller. Skip the venv bootstrap entirely — all
+# modules are already embedded. multiprocessing.freeze_support() is required on
+# Windows to prevent the frozen executable from re-spawning itself infinitely.
+
+if getattr(sys, 'frozen', False):
+    import multiprocessing
+    multiprocessing.freeze_support()
+    _run_app()
+    sys.exit(0)
+
+# ── Development / zero-setup path ─────────────────────────────────────────────
 
 _HERE    = Path(__file__).parent
 _VENV    = _HERE / ".venv"
 _MANAGED = _HERE / ".venv" / ".photosort-ready"  # sentinel file
 
-# ── Bootstrap: create/update venv and re-exec if needed ──────────────────────
 
 def _venv_python() -> Path:
     if sys.platform == "win32":
@@ -55,33 +66,36 @@ def _bootstrap():
     sys.exit(result.returncode)
 
 
+def _run_app():
+    """Launch CLI or GUI depending on whether arguments were passed."""
+    _SRC = Path(__file__).parent / "src"
+    if _SRC.exists() and str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
+    if len(sys.argv) > 1:
+        from photosort.cli import main
+        main()
+    else:
+        try:
+            import tkinter  # noqa: F401
+        except ModuleNotFoundError:
+            import platform
+            print("ERROR: Tk is not available in this Python installation.")
+            if sys.platform == "darwin":
+                ver = platform.python_version_tuple()
+                print(f"  Fix: brew install python-tk@{ver[0]}.{ver[1]}")
+            elif sys.platform == "win32":
+                print("  Fix: reinstall Python from python.org (check 'tcl/tk and IDLE')")
+            else:
+                print("  Fix: sudo apt install python3-tk  (or equivalent for your distro)")
+            sys.exit(1)
+
+        from photosort.gui.app import main
+        main()
+
+
 if not _already_in_managed_venv():
     _bootstrap()
-    sys.exit(0)  # unreachable (execv replaces the process), but keeps linters happy
+    sys.exit(0)
 
-# ── We are now running inside the managed venv ────────────────────────────────
-
-_SRC = _HERE / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-if len(sys.argv) > 1:
-    from photosort.cli import main
-    main()
-else:
-    try:
-        import tkinter  # noqa: F401
-    except ModuleNotFoundError:
-        import platform
-        print("ERROR: Tk is not available in this Python installation.")
-        if sys.platform == "darwin":
-            ver = platform.python_version_tuple()
-            print(f"  Fix: brew install python-tk@{ver[0]}.{ver[1]}")
-        elif sys.platform == "win32":
-            print("  Fix: reinstall Python from python.org (check 'tcl/tk and IDLE')")
-        else:
-            print("  Fix: sudo apt install python3-tk  (or equivalent for your distro)")
-        sys.exit(1)
-
-    from photosort.gui.app import main
-    main()
+_run_app()
