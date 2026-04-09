@@ -231,14 +231,18 @@ class App(ctk.CTk):
             return
         if self._worker.paused:
             self._worker.resume()
-            self._pause_btn.configure(text="Pause")
-            self._progress_label.configure(text=self._progress_label.cget("text").replace(" [PAUSED]", ""))
+            self._pause_btn.configure(
+                text="Pause",
+                fg_color="gray40",
+                hover_color="gray30",
+            )
         else:
             self._worker.pause()
-            self._pause_btn.configure(text="Resume")
-            current_text = self._progress_label.cget("text")
-            if "[PAUSED]" not in current_text:
-                self._progress_label.configure(text=current_text + " [PAUSED]")
+            self._pause_btn.configure(
+                text="Resume",
+                fg_color=("#e07b00", "#c06800"),
+                hover_color=("#c06800", "#a05500"),
+            )
 
     def _start_sort(self, config: SortConfig):
         self._sort_btn.configure(state="disabled", text="Sorting…")
@@ -359,7 +363,10 @@ class App(ctk.CTk):
 
     def _reset_buttons(self):
         self._sort_btn.configure(state="normal", text="Sort Files")
-        self._pause_btn.configure(state="disabled", text="Pause")
+        self._pause_btn.configure(
+            state="disabled", text="Pause",
+            fg_color="gray40", hover_color="gray30",
+        )
 
     # ── Log helpers ───────────────────────────────────────────────────────────
 

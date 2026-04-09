@@ -248,7 +248,7 @@ def sort_files(
             pause_event.wait()
         return _process_file(
             filepath, config, dest_registry, timeline, is_vid,
-            _registry_lock, _timeline_lock,
+            _registry_lock, _timeline_lock, pause_event,
         )
 
     def _record(record: FileRecord, is_vid: bool) -> None:
@@ -327,6 +327,7 @@ def _process_file(
     is_video: bool,
     registry_lock: Optional[threading.Lock] = None,
     timeline_lock: Optional[threading.Lock] = None,
+    pause_event: Optional[threading.Event] = None,
 ) -> FileRecord:
     prox_match   = False
     prox_delta   = None
@@ -385,6 +386,10 @@ def _process_file(
             sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
 
         if not config.dry_run:
+            # Check pause again right before the move — the slow I/O operation.
+            # This ensures pause is honoured even mid-file for large transfers.
+            if pause_event:
+                pause_event.wait()
             final_path.parent.mkdir(parents=True, exist_ok=True)
             _move_file(filepath, final_path)
 
