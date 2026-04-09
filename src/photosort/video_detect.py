@@ -10,9 +10,14 @@ Two strategies:
 from __future__ import annotations
 
 import bisect
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+# Maximum seconds to spend parsing container metadata.
+# hachoir can hang indefinitely on malformed or unusual video files.
+_HACHOIR_TIMEOUT = 5.0
 
 from photosort.constants import VIDEO_EXTENSIONS
 from photosort.device_detect import _sanitize
@@ -34,34 +39,47 @@ def get_video_device_from_metadata(filepath: Path) -> Optional[str]:
     """
     Try to extract a camera model name from MP4/MOV container metadata.
     Returns a sanitized device name or None.
+
+    Runs hachoir in a daemon thread with a hard timeout (_HACHOIR_TIMEOUT
+    seconds) so that malformed or unusual video files cannot cause an
+    indefinite hang.
     """
     if not HACHOIR_AVAILABLE:
         return None
     if filepath.suffix.lower() not in VIDEO_EXTENSIONS:
         return None
-    try:
-        with createParser(str(filepath)) as parser:
-            if not parser:
-                return None
-            metadata = extractMetadata(parser)
-            if not metadata:
-                return None
-            # hachoir exposes metadata fields via .get(key) or iteration
-            # 'producer' often contains device/encoder info on Android/iPhone
-            for key in ("producer", "device", "model", "make"):
-                try:
-                    val = metadata.get(key)
-                    if val:
-                        text = str(val).strip()
-                        if text and len(text) > 1:
-                            sanitized = _sanitize(text)
-                            if sanitized and sanitized != "unknown-device":
-                                return sanitized
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return None
+
+    _result: list[Optional[str]] = [None]
+
+    def _parse() -> None:
+        try:
+            with createParser(str(filepath)) as parser:
+                if not parser:
+                    return
+                metadata = extractMetadata(parser)
+                if not metadata:
+                    return
+                # hachoir exposes metadata fields via .get(key) or iteration
+                # 'producer' often contains device/encoder info on Android/iPhone
+                for key in ("producer", "device", "model", "make"):
+                    try:
+                        val = metadata.get(key)
+                        if val:
+                            text = str(val).strip()
+                            if text and len(text) > 1:
+                                sanitized = _sanitize(text)
+                                if sanitized and sanitized != "unknown-device":
+                                    _result[0] = sanitized
+                                    return
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_parse, daemon=True)
+    t.start()
+    t.join(timeout=_HACHOIR_TIMEOUT)
+    return _result[0]
 
 
 # ── Device timeline (built from processed photos) ────────────────────────────

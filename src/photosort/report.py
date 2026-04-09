@@ -41,6 +41,8 @@ def _build_device_date_index(destination: Path) -> dict[str, dict[str, int]]:
     """
     index: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
+    if not destination.exists():
+        return index
     for device_dir in destination.iterdir():
         if not device_dir.is_dir():
             continue
@@ -289,6 +291,8 @@ def generate_duplicate_report(
     Generate a plain-text report of all files routed to duplicates/ subfolders.
     Returns the report path, or None if there are no duplicates.
     """
+    if not destination.exists():
+        return None
     dup_dirs = [
         d / "duplicates"
         for d in destination.iterdir()

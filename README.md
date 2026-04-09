@@ -56,6 +56,14 @@ python main.py
 4. **Dry Run** is on by default — review the log, then uncheck to move files
 5. Use **Pause / Resume** to temporarily halt a running sort
 
+### GUI features
+
+- **Dark / Light / System** mode toggle — cycles through all three appearance modes
+- **Indeterminate scan bar** — animates while scanning, switches to a real progress bar once the file count is known
+- **Elapsed time & ETA** — shown live during a sort run
+- **Error badge** — the log header shows `Errors (N)` if any files fail
+- **Clear Log** button — wipes the log panel without stopping the sort
+
 ## CLI
 
 ```bash
@@ -100,6 +108,20 @@ python main.py ~/import ~/sorted --proximity-window 0
 | Filename collision, same SHA256 | `<device>/duplicates/…/D1/`, `D2/`, … |
 | Filename collision, different content | `_1`, `_2` suffix in main folder |
 
+## Skip list
+
+Create a `.photosort-skip` file in the source folder to exclude files by name or glob pattern:
+
+```
+# Ignore temp files and a specific folder
+*.tmp
+*.DS_Store
+Thumbs.db
+RAW backups/**
+```
+
+Skipped files are counted separately in the summary and never moved.
+
 ## Date priority
 
 PhotoSort tries date sources in order until one succeeds:
@@ -113,11 +135,11 @@ Reorder with `--priority exif,modified` etc.
 
 ## Video device detection
 
-1. **Container metadata** — reads Make/Model atoms from MP4/MOV via hachoir
+1. **Container metadata** — reads Make/Model atoms from MP4/MOV via hachoir (5-second timeout per file — malformed files are skipped automatically)
 2. **Proximity match** — finds the nearest photo (by timestamp) with a known EXIF device within the configured window (default 30 min). Matches over 10 min are flagged as warnings in the log.
 3. **Fallback** — `unmatched-videos/`
 
-## Reports
+## Reports & undo
 
 After each live run, PhotoSort writes the following files to the output folder:
 
@@ -127,6 +149,8 @@ After each live run, PhotoSort writes the following files to the output folder:
 | `photosort-duplicate-report.txt` | All files routed to `duplicates/` subfolders — safe to delete if not needed |
 | `photosort-unmatched-report.txt` | Unmatched videos with device recommendations based on nearby photo activity |
 | `photosort-misc-report.txt` | Summary of `misc/` and `screenshots/` contents with device suggestions |
+| `photosort-undo.sh` | Shell script to move every file back to its original location (macOS/Linux) |
+| `photosort-undo.bat` | Batch script to reverse the sort (Windows) |
 
 ## Parallel processing
 

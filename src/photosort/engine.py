@@ -208,13 +208,23 @@ def resolve_duplicate(
         dest_registry[intended_dest] = ""  # placeholder; hash filled lazily
         return intended_dest, False, 0
 
-    # --- Collision: hash both files to decide what to do ---
+    # --- Collision ---
+    # During a dry run the destination doesn't exist yet, so we cannot read
+    # the "already placed" file to compare hashes.  Skip hashing entirely and
+    # treat every name collision as a distinct file.  This avoids reading
+    # potentially multi-GB source files for no useful result.
+    if dry_run:
+        final = _safe_suffix(intended_dest, dest_registry)
+        dest_registry[final] = ""
+        return final, False, 0
+
+    # --- Live run: hash both files to detect true duplicates ---
     incoming_hash = sha256_file(source_path)
 
     existing_hash = dest_registry[intended_dest]
     if not existing_hash:
         # First time this slot was actually filled — compute the existing file's hash
-        if not dry_run and intended_dest.exists():
+        if intended_dest.exists():
             existing_hash = sha256_file(intended_dest)
         else:
             existing_hash = ""
@@ -228,7 +238,7 @@ def resolve_duplicate(
         return dup_dest, True, dup_n
 
     # Different files, same name — keep in main folder with numeric suffix
-    final = _safe_suffix(intended_dest)
+    final = _safe_suffix(intended_dest, dest_registry)
     dest_registry[final] = incoming_hash
     return final, False, 0
 
@@ -253,12 +263,12 @@ def _next_duplicate_index(intended_dest: Path, dest_registry: dict[Path, str]) -
     return len(existing) + 1
 
 
-def _safe_suffix(path: Path) -> Path:
-    """Append _1, _2, … to stem until a path not in the registry is found."""
+def _safe_suffix(path: Path, dest_registry: dict[Path, str]) -> Path:
+    """Append _1, _2, … to stem until a name not in the registry or on disk is found."""
     counter = 1
     while True:
         candidate = path.with_stem(f"{path.stem}_{counter}")
-        if not candidate.exists():
+        if candidate not in dest_registry and not candidate.exists():
             return candidate
         counter += 1
 
