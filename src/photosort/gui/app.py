@@ -38,7 +38,6 @@ class App(ctk.CTk):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Give the main window a single scrollable container
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=20, pady=20)
         outer.columnconfigure(0, weight=1)
@@ -84,24 +83,47 @@ class App(ctk.CTk):
         self._proximity_selector = ProximityWindowSelector(options_card)
         self._proximity_selector.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 8))
 
+        # Workers row
+        workers_row = ctk.CTkFrame(options_card, fg_color="transparent")
+        workers_row.grid(row=4, column=0, sticky="w", padx=16, pady=(0, 8))
+        ctk.CTkLabel(workers_row, text="Parallel workers:").pack(side="left", padx=(0, 8))
+        self._workers_var = ctk.StringVar(value="1")
+        ctk.CTkEntry(workers_row, textvariable=self._workers_var, width=48).pack(side="left")
+        ctk.CTkLabel(
+            workers_row, text="  (1 = safe for HDDs,  4+ for SSDs / network shares)",
+            text_color="gray",
+        ).pack(side="left", padx=(6, 0))
+
         dry_row = ctk.CTkFrame(options_card, fg_color="transparent")
-        dry_row.grid(row=4, column=0, sticky="w", padx=16, pady=(0, 12))
+        dry_row.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 12))
         self._dry_run_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             dry_row, text="Dry Run (preview only — no files will be moved)",
             variable=self._dry_run_var,
         ).pack(side="left")
 
-        # Sort button
+        # Buttons row: Sort + Pause/Resume
+        btn_row = ctk.CTkFrame(outer, fg_color="transparent")
+        btn_row.grid(row=row, column=0, sticky="ew", pady=(0, 16))
+        btn_row.columnconfigure(0, weight=1)
+        row += 1
+
         self._sort_btn = ctk.CTkButton(
-            outer, text="Sort Files", height=42,
+            btn_row, text="Sort Files", height=42,
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._on_sort_click,
         )
-        self._sort_btn.grid(row=row, column=0, sticky="ew", pady=(0, 16))
-        row += 1
+        self._sort_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
-        # Progress bar
+        self._pause_btn = ctk.CTkButton(
+            btn_row, text="Pause", width=90, height=42,
+            fg_color="gray40", hover_color="gray30",
+            command=self._on_pause_click,
+            state="disabled",
+        )
+        self._pause_btn.grid(row=0, column=1, sticky="e")
+
+        # Scan + sort progress
         self._progress_label = ctk.CTkLabel(outer, text="", font=ctk.CTkFont(size=12))
         self._progress_label.grid(row=row, column=0, sticky="w", pady=(0, 4))
         row += 1
@@ -139,7 +161,6 @@ class App(ctk.CTk):
             text_color="red",
         )
         self._error_box.configure(state="disabled")
-        # Not added to grid yet — shown on demand
         self._error_row_header = row
         self._error_row_box    = row + 1
         self._outer = outer
@@ -147,7 +168,6 @@ class App(ctk.CTk):
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _on_input_change(self, path: Path):
-        """Scan file counts when a new input folder is selected."""
         self._input_picker.set_status("Scanning…", color="gray")
         self.after(50, lambda: self._scan_input(path))
 
@@ -177,6 +197,11 @@ class App(ctk.CTk):
             messagebox.showerror("PhotoSort", "Input and output folders must be different.")
             return
 
+        try:
+            workers = max(1, int(self._workers_var.get()))
+        except ValueError:
+            workers = 1
+
         dry_run = self._dry_run_var.get()
 
         if not dry_run:
@@ -196,26 +221,47 @@ class App(ctk.CTk):
             date_format=self._date_fmt_selector.get(),
             priority=self._priority_selector.get(),
             proximity_window_minutes=self._proximity_selector.get(),
+            workers=workers,
         )
 
         self._start_sort(config)
 
+    def _on_pause_click(self):
+        if self._worker is None:
+            return
+        if self._worker.paused:
+            self._worker.resume()
+            self._pause_btn.configure(text="Pause")
+            self._progress_label.configure(text=self._progress_label.cget("text").replace(" [PAUSED]", ""))
+        else:
+            self._worker.pause()
+            self._pause_btn.configure(text="Resume")
+            current_text = self._progress_label.cget("text")
+            if "[PAUSED]" not in current_text:
+                self._progress_label.configure(text=current_text + " [PAUSED]")
+
     def _start_sort(self, config: SortConfig):
         self._sort_btn.configure(state="disabled", text="Sorting…")
+        self._pause_btn.configure(state="normal", text="Pause")
         self._progress_bar.set(0)
-        self._progress_label.configure(text="Starting…")
+        self._progress_label.configure(text="Scanning for media files…")
         self._clear_log()
         self._hide_errors()
+        self._summary_label.configure(text="")
 
         self._worker = SortWorker(
             config=config,
             on_progress=self._on_progress,
             on_complete=self._on_complete,
             on_error=self._on_worker_error,
+            on_scan_progress=self._on_scan_progress,
         )
         self._worker.start()
 
     # ── Worker callbacks (called from background thread) ──────────────────────
+
+    def _on_scan_progress(self, count: int):
+        self.after(0, self._update_scan_label, count)
 
     def _on_progress(self, current: int, total: int, record: FileRecord):
         self.after(0, self._update_progress, current, total, record)
@@ -225,9 +271,12 @@ class App(ctk.CTk):
 
     def _on_worker_error(self, exc: Exception):
         self.after(0, lambda: messagebox.showerror("PhotoSort — Error", str(exc)))
-        self.after(0, lambda: self._sort_btn.configure(state="normal", text="Sort Files"))
+        self.after(0, self._reset_buttons)
 
     # ── UI updates (always on main thread via .after) ─────────────────────────
+
+    def _update_scan_label(self, count: int):
+        self._progress_label.configure(text=f"Scanning… {count:,} files found")
 
     def _update_progress(self, current: int, total: int, record: FileRecord):
         if total > 0:
@@ -262,7 +311,6 @@ class App(ctk.CTk):
         self._progress_bar.set(1)
         action = "Would move" if result.moved == 0 and result.total_files > 0 else "Moved"
 
-        # 1:1 check
         expected = result.total_files
         actual   = result.moved + result.duplicates
         check    = "[OK] 1:1" if actual == expected else f"[!] {actual}/{expected}"
@@ -278,9 +326,8 @@ class App(ctk.CTk):
         if result.errors > 0:
             self._show_errors()
 
-        self._sort_btn.configure(state="normal", text="Sort Files")
+        self._reset_buttons()
 
-        # Show output file count
         out = self._output_picker.get()
         if out and out.exists():
             out_count = sum(1 for f in out.rglob("*") if f.is_file())
@@ -289,11 +336,11 @@ class App(ctk.CTk):
                 color=("gray20", "gray80"),
             )
 
-        # Generate post-sort reports
         if out:
             from photosort.report import (
                 generate_unmatched_report,
                 generate_misc_report,
+                generate_duplicate_report,
             )
             dry = self._dry_run_var.get()
             note = "[DRY RUN] " if dry else ""
@@ -302,9 +349,17 @@ class App(ctk.CTk):
             if unmatched:
                 self._append_log(f"\n{note}Unmatched video report → {unmatched}\n")
 
+            dup_rep = generate_duplicate_report(out, dry_run=dry)
+            if dup_rep:
+                self._append_log(f"{note}Duplicate report       → {dup_rep}\n")
+
             misc_rep = generate_misc_report(out, dry_run=dry)
             if misc_rep:
                 self._append_log(f"{note}Misc report            → {misc_rep}\n")
+
+    def _reset_buttons(self):
+        self._sort_btn.configure(state="normal", text="Sort Files")
+        self._pause_btn.configure(state="disabled", text="Pause")
 
     # ── Log helpers ───────────────────────────────────────────────────────────
 

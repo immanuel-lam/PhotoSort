@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import os
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -29,17 +34,33 @@ from photosort.video_detect import (
 # Folder name used when a photo has no EXIF device info
 MISC_FOLDER = "misc"
 
-ProgressCallback = Callable[[int, int, FileRecord], None]
+# Log file written to the destination after every live run
+LOG_FILENAME = "photosort-log.csv"
+
+ProgressCallback    = Callable[[int, int, FileRecord], None]
+ScanProgressCallback = Callable[[int], None]
 
 
 # ── Scanning ──────────────────────────────────────────────────────────────────
 
-def scan_media_files(source: Path) -> list[Path]:
-    """Return all media files under *source* (recursive), sorted by path."""
-    return sorted(
-        f for f in source.rglob('*')
-        if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS
-    )
+def scan_media_files(
+    source: Path,
+    on_progress: Optional[ScanProgressCallback] = None,
+) -> list[Path]:
+    """
+    Return all media files under *source* (recursive), sorted by path.
+    Calls on_progress(count) after each file found so callers can show a
+    live "Scanning… N files" counter without waiting for the full scan.
+    """
+    files: list[Path] = []
+    for dirpath, _, filenames in os.walk(source):
+        for fname in filenames:
+            p = Path(dirpath) / fname
+            if p.suffix.lower() in ALL_EXTENSIONS:
+                files.append(p)
+                if on_progress:
+                    on_progress(len(files))
+    return sorted(files)
 
 
 def _split_photos_videos(files: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -145,7 +166,6 @@ def _duplicate_path(intended_dest: Path, base_dest: Path, dup_n: int) -> Path:
 
 def _next_duplicate_index(intended_dest: Path, dest_registry: dict[Path, str]) -> int:
     """Count how many D-n entries already exist for this destination slot."""
-    base = str(intended_dest)
     existing = [k for k in dest_registry if "duplicates" in str(k) and k.name == intended_dest.name]
     return len(existing) + 1
 
@@ -180,6 +200,8 @@ def _move_file(src: Path, dst: Path) -> None:
 def sort_files(
     config: SortConfig,
     on_progress: Optional[ProgressCallback] = None,
+    on_scan_progress: Optional[ScanProgressCallback] = None,
+    pause_event: Optional[threading.Event] = None,
 ) -> SortResult:
     """
     Two-pass sort:
@@ -187,21 +209,50 @@ def sort_files(
       Pass 2 — videos only: try container metadata, then proximity match.
 
     Progress is reported via on_progress(current_index, total, FileRecord).
+    on_scan_progress(count) fires during the initial scan phase as files are found.
+    pause_event: when set (or None) the engine runs; when cleared, it blocks until resumed.
+    config.workers > 1 enables concurrent file processing (good for SSDs/network shares).
     """
     result = SortResult()
     dest_registry: dict[Path, str] = {}
     timeline = DeviceTimeline()
 
-    all_files = scan_media_files(config.source)
+    _registry_lock = threading.Lock()
+    _timeline_lock = threading.Lock()
+    _counter_lock  = threading.Lock()
+    _counter       = [0]
+
+    all_files = scan_media_files(config.source, on_scan_progress)
     photos, videos = _split_photos_videos(all_files)
-    ordered = photos + videos          # photos always processed first
+    ordered = photos + videos
     result.total_files = len(ordered)
+    total = result.total_files
 
-    for idx, filepath in enumerate(ordered, start=1):
-        is_video = filepath.suffix.lower() in VIDEO_EXTENSIONS
-        record = _process_file(filepath, config, dest_registry, timeline, is_video)
-        result.records.append(record)
+    # ── Log file ──────────────────────────────────────────────────────────────
+    log_file   = None
+    log_writer = None
+    if not config.dry_run and total > 0:
+        log_path = config.destination / LOG_FILENAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file   = open(log_path, "w", newline="", encoding="utf-8")
+        log_writer = csv.writer(log_file)
+        log_writer.writerow([
+            "timestamp", "source", "destination",
+            "status", "device", "date_source", "sha256", "error",
+        ])
 
+    # ── Per-file processing ───────────────────────────────────────────────────
+
+    def _do_one(filepath: Path, is_vid: bool) -> FileRecord:
+        if pause_event:
+            pause_event.wait()
+        return _process_file(
+            filepath, config, dest_registry, timeline, is_vid,
+            _registry_lock, _timeline_lock,
+        )
+
+    def _record(record: FileRecord, is_vid: bool) -> None:
+        """Accumulate result stats, write log row, fire progress callback."""
         if record.error:
             result.errors += 1
         elif record.is_duplicate:
@@ -218,14 +269,55 @@ def sort_files(
                 result.by_source.get(record.date_source.value, 0) + 1
             )
 
-        device_key = record.device or (UNMATCHED_VIDEO_FOLDER if is_video else MISC_FOLDER)
+        device_key = record.device or (UNMATCHED_VIDEO_FOLDER if is_vid else MISC_FOLDER)
         result.by_device[device_key] = result.by_device.get(device_key, 0) + 1
 
+        result.records.append(record)
+
+        if log_writer:
+            status = ("error" if record.error
+                      else "duplicate" if record.is_duplicate
+                      else "moved")
+            log_writer.writerow([
+                datetime.now().isoformat(timespec="seconds"),
+                str(record.source_path),
+                str(record.dest_path) if record.dest_path else "",
+                status,
+                record.device or "",
+                record.date_source.value if record.date_source else "",
+                record.sha256 or "",
+                record.error or "",
+            ])
+
+        with _counter_lock:
+            _counter[0] += 1
+            idx = _counter[0]
+
         if on_progress:
-            on_progress(idx, result.total_files, record)
+            on_progress(idx, total, record)
+
+    # ── Two passes ────────────────────────────────────────────────────────────
+    try:
+        workers = config.workers
+        for pass_files, is_vid in [(photos, False), (videos, True)]:
+            if not pass_files:
+                continue
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(_do_one, f, is_vid): is_vid for f in pass_files}
+                    for future in as_completed(futures):
+                        _record(future.result(), is_vid)
+            else:
+                for filepath in pass_files:
+                    _record(_do_one(filepath, is_vid), is_vid)
+    finally:
+        if log_file:
+            log_file.close()
 
     return result
 
+
+# ── Single-file processor ─────────────────────────────────────────────────────
 
 def _process_file(
     filepath: Path,
@@ -233,6 +325,8 @@ def _process_file(
     dest_registry: dict[Path, str],
     timeline: DeviceTimeline,
     is_video: bool,
+    registry_lock: Optional[threading.Lock] = None,
+    timeline_lock: Optional[threading.Lock] = None,
 ) -> FileRecord:
     prox_match   = False
     prox_delta   = None
@@ -242,9 +336,7 @@ def _process_file(
         dt, date_source = get_best_date(filepath, config.priority)
 
         if is_video:
-            # 1. Try container metadata (MP4/MOV atoms)
             device = get_video_device_from_metadata(filepath)
-            # 2. Proximity match against photo timeline
             if not device and config.proximity_window_minutes > 0 and dt:
                 matched_device, delta = timeline.nearest(dt, config.proximity_window_minutes)
                 if matched_device:
@@ -259,10 +351,13 @@ def _process_file(
             else:
                 folder = UNMATCHED_VIDEO_FOLDER
         else:
-            # Photo: EXIF device, add to timeline for later video matching
             device = get_device_name(filepath)
             if device and dt:
-                timeline.add(dt, device)
+                if timeline_lock:
+                    with timeline_lock:
+                        timeline.add(dt, device)
+                else:
+                    timeline.add(dt, device)
             if device:
                 folder = device
             elif is_screenshot_or_recording(filepath):
@@ -276,11 +371,18 @@ def _process_file(
             / filepath.name
         )
 
-        final_path, is_dup, dup_idx = resolve_duplicate(
-            intended, filepath, dest_registry, config.destination, config.dry_run
-        )
-
-        sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
+        # Duplicate resolution and sha lookup must be atomic under the registry lock
+        if registry_lock:
+            with registry_lock:
+                final_path, is_dup, dup_idx = resolve_duplicate(
+                    intended, filepath, dest_registry, config.destination, config.dry_run
+                )
+                sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
+        else:
+            final_path, is_dup, dup_idx = resolve_duplicate(
+                intended, filepath, dest_registry, config.destination, config.dry_run
+            )
+            sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
 
         if not config.dry_run:
             final_path.parent.mkdir(parents=True, exist_ok=True)

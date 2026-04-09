@@ -93,7 +93,8 @@ def test_live_run_1to1(tmp_photos: Path, tmp_path: Path):
     out = tmp_path / "out"
     config = SortConfig(source=tmp_photos, destination=out, dry_run=False)
     result = sort_files(config)
-    output_files = [f for f in out.rglob("*") if f.is_file()]
+    from photosort.constants import ALL_EXTENSIONS
+    output_files = [f for f in out.rglob("*") if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS]
     assert len(output_files) == result.total_files
 
 

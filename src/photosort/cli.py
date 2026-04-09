@@ -109,6 +109,16 @@ Examples:
             "Default: 30"
         ),
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Parallel worker threads. 1 = single-threaded (default, safe for HDDs). "
+            "4+ recommended for SSDs or network shares (SMB/NAS)."
+        ),
+    )
     return parser
 
 
@@ -134,10 +144,15 @@ def _parse_priority(raw: str) -> list[DateSource]:
 
 # ── Progress callback ─────────────────────────────────────────────────────────
 
-def _make_progress_callback(total: int):
-    pad = len(str(total))
+def _make_progress_callback(total_ref):
+    """
+    total_ref is either an int or a [int] list (updated live during scan).
+    Using a list lets the CLI update the denominator once scanning finishes.
+    """
 
     def callback(current: int, _total: int, record: FileRecord) -> None:
+        total = total_ref[0] if isinstance(total_ref, list) else total_ref
+        pad   = len(str(total))
         if record.error:
             print(f"[{current:>{pad}}/{total}] {_ERR_ICON} ERROR {record.source_path.name}: {record.error}")
             return
@@ -208,6 +223,8 @@ def main() -> None:
     print(f"  Format      : {args.format}")
     print(f"  Priority    : {' → '.join(s.value for s in priority)}")
     print(f"  Proximity   : {f'{prox} min (warnings >10 min)' if prox > 0 else 'disabled'}")
+    workers = max(1, args.workers)
+    print(f"  Workers     : {workers}")
     _ok  = "✓" if _UTF8 else "OK"
     _no  = "✗" if _UTF8 else "--"
     print(f"  Pillow/EXIF : {_ok + ' enabled' if PILLOW_AVAILABLE else _no + ' disabled'}")
@@ -220,18 +237,32 @@ def main() -> None:
         date_format=args.format,
         priority=priority,
         proximity_window_minutes=prox,
+        workers=workers,
     )
 
-    # Scan count first
-    from photosort.engine import scan_media_files
-    media_files = scan_media_files(source)
-    total = len(media_files)
+    # Scan with live progress, then sort
+    def _on_scan(count: int) -> None:
+        print(f"\r  Scanning… {count:,} files found", end="", flush=True)
+
+    # _total is filled in once the scan completes; progress callback reads it live
+    _total = [0]
+
+    def _on_scan(count: int) -> None:
+        print(f"\r  Scanning… {count:,} files found", end="", flush=True)
+        _total[0] = count
+
+    result = sort_files(
+        config,
+        on_progress=_make_progress_callback(_total),
+        on_scan_progress=_on_scan,
+    )
+    total = result.total_files
+    print(f"\r  Found {total:,} media file(s).{' ' * 20}")  # overwrite scan line
+    print()
+
     if total == 0:
         print("No media files found in source folder.")
         return
-    print(f"Found {total} media file(s).\n")
-
-    result = sort_files(config, on_progress=_make_progress_callback(total))
 
     # Summary
     action = "Would move" if args.dry_run else "Moved"
@@ -260,15 +291,21 @@ def main() -> None:
             if rec.error:
                 print(f"    {_err} {rec.source_path.name}: {rec.error}")
 
-    # Unmatched video report
+    # Post-sort reports
     from photosort.report import (
         generate_unmatched_report, REPORT_FILENAME,
         generate_misc_report, MISC_REPORT_FILENAME,
+        generate_duplicate_report, DUPLICATE_REPORT_FILENAME,
     )
     report_path = generate_unmatched_report(destination, dry_run=args.dry_run)
     if report_path:
         label = f"[DRY RUN] Would write → {REPORT_FILENAME}" if args.dry_run else str(report_path)
         print(f"\n  Unmatched video report → {label}")
+
+    dup_report_path = generate_duplicate_report(destination, dry_run=args.dry_run)
+    if dup_report_path:
+        label = f"[DRY RUN] Would write → {DUPLICATE_REPORT_FILENAME}" if args.dry_run else str(dup_report_path)
+        print(f"  Duplicate report       → {label}")
 
     misc_report_path = generate_misc_report(destination, dry_run=args.dry_run)
     if misc_report_path:

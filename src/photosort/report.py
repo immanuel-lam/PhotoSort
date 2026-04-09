@@ -19,8 +19,9 @@ from photosort.models import SCREENSHOTS_FOLDER, UNMATCHED_VIDEO_FOLDER
 # Match any YYYY/YYYY-MM/YYYY-MM-DD date path segments inside a full path
 _DATE_RE = re.compile(r'(\d{4})[/\\](\d{4}-\d{2})[/\\](\d{4}-\d{2}-\d{2})')
 
-REPORT_FILENAME      = "photosort-unmatched-report.txt"
-MISC_REPORT_FILENAME = "photosort-misc-report.txt"
+REPORT_FILENAME           = "photosort-unmatched-report.txt"
+MISC_REPORT_FILENAME      = "photosort-misc-report.txt"
+DUPLICATE_REPORT_FILENAME = "photosort-duplicate-report.txt"
 
 
 # ── Date path extraction ──────────────────────────────────────────────────────
@@ -276,6 +277,71 @@ def _build_misc_report_lines(
 
     lines += ["=" * W, "End of report"]
     return lines
+
+
+# ── Duplicate report ─────────────────────────────────────────────────────────
+
+def generate_duplicate_report(
+    destination: Path,
+    dry_run: bool = False,
+) -> Optional[Path]:
+    """
+    Generate a plain-text report of all files routed to duplicates/ subfolders.
+    Returns the report path, or None if there are no duplicates.
+    """
+    dup_dirs = [
+        d / "duplicates"
+        for d in destination.iterdir()
+        if d.is_dir() and (d / "duplicates").exists()
+    ]
+    if not dup_dirs:
+        return None
+
+    # Collect all duplicate files: {original_name: [(Dn_path, device)]}
+    groups: dict[str, list[tuple[Path, str]]] = defaultdict(list)
+    for dup_root in dup_dirs:
+        device = dup_root.parent.name
+        for f in dup_root.rglob("*"):
+            if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS:
+                groups[f.name].append((f, device))
+
+    if not groups:
+        return None
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode_note = "  [DRY RUN — report not written to disk]" if dry_run else ""
+    W = 62
+
+    total_dups = sum(len(v) for v in groups.values())
+    lines = [
+        "PhotoSort — Duplicate Report",
+        f"Generated  : {timestamp}{mode_note}",
+        f"Destination: {destination}",
+        "=" * W,
+        "",
+        f"  {total_dups} duplicate file(s) across {len(groups)} unique filename(s).",
+        "  These are exact SHA256 matches of files already in their device folder.",
+        "  Safe to delete the duplicates/ subfolders if you don't need them.",
+        "",
+        "=" * W,
+        "",
+    ]
+
+    for name in sorted(groups):
+        copies = groups[name]
+        lines.append(f"  {name}  ({len(copies)} duplicate copy/copies)")
+        for path, device in sorted(copies, key=lambda x: str(x[0])):
+            rel = path.relative_to(destination)
+            lines.append(f"    [{device}]  {rel}")
+        lines.append("")
+
+    lines += ["=" * W, "End of report"]
+
+    report_path = destination / DUPLICATE_REPORT_FILENAME
+    if not dry_run:
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+
+    return report_path
 
 
 def _section_lines(
