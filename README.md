@@ -26,9 +26,7 @@ Download the latest release for your platform from the [Releases](../../releases
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS — Apple Silicon | `PhotoSort-macos-arm64` | M1/M2/M3/M4 |
-| macOS — Intel | `PhotoSort-macos-x64` | 2019 and earlier Macs |
-| macOS — Universal | `PhotoSort-macos-universal` | Runs natively on both |
+| macOS | `PhotoSort-macos-arm64.dmg` | Apple Silicon (M1/M2/M3/M4) |
 | Windows — x64 | `PhotoSort-windows-x64.exe` | Intel/AMD 64-bit |
 | Windows — arm64 | `PhotoSort-windows-arm64.exe` | Snapdragon/ARM devices |
 | Windows — Universal | `PhotoSort-windows-universal.zip` | Contains both .exe files |

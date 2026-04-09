@@ -49,88 +49,6 @@ jobs:
           name: macos-arm64
           path: PhotoSort-macos-arm64.dmg
 
-  # ── macOS x64 (Intel, cross-compiled from arm64 runner) ───────────────────
-  build-macos-x64:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: pip install Pillow customtkinter hachoir pyinstaller
-      - name: Build .app
-        run: |
-          pyinstaller \
-            --windowed \
-            --target-arch x86_64 \
-            --name "PhotoSort" \
-            --add-data "src/photosort:photosort" \
-            --paths src \
-            --collect-all customtkinter \
-            --collect-all tkinter \
-            --hidden-import tkinter \
-            --hidden-import _tkinter \
-            main.py
-      - name: Package DMG
-        run: |
-          brew install create-dmg
-          create-dmg \
-            --volname "PhotoSort" \
-            --window-pos 200 120 \
-            --window-size 600 380 \
-            --icon-size 100 \
-            --icon "PhotoSort.app" 175 175 \
-            --hide-extension "PhotoSort.app" \
-            --app-drop-link 425 175 \
-            "PhotoSort-macos-x64.dmg" \
-            "dist/PhotoSort.app"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64
-          path: PhotoSort-macos-x64.dmg
-
-  # ── macOS Universal (native fat binary via --target-arch universal2) ───────
-  build-macos-universal:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: pip install Pillow customtkinter hachoir pyinstaller
-      - name: Build universal2 .app
-        run: |
-          pyinstaller \
-            --windowed \
-            --target-arch universal2 \
-            --name "PhotoSort" \
-            --add-data "src/photosort:photosort" \
-            --paths src \
-            --collect-all customtkinter \
-            --collect-all tkinter \
-            --hidden-import tkinter \
-            --hidden-import _tkinter \
-            main.py
-      - name: Package DMG
-        run: |
-          brew install create-dmg
-          create-dmg \
-            --volname "PhotoSort" \
-            --window-pos 200 120 \
-            --window-size 600 380 \
-            --icon-size 100 \
-            --icon "PhotoSort.app" 175 175 \
-            --hide-extension "PhotoSort.app" \
-            --app-drop-link 425 175 \
-            "PhotoSort-macos-universal.dmg" \
-            "dist/PhotoSort.app"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-universal
-          path: PhotoSort-macos-universal.dmg
-
   # ── Windows x64 ────────────────────────────────────────────────────────────
   build-windows-x64:
     runs-on: windows-latest
@@ -217,8 +135,6 @@ jobs:
   release:
     needs:
       - build-macos-arm64
-      - build-macos-x64
-      - build-macos-universal
       - build-windows-x64
       - build-windows-arm64
       - build-windows-universal
@@ -227,14 +143,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: macos-arm64
-          path: artifacts/
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-x64
-          path: artifacts/
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-universal
           path: artifacts/
       - uses: actions/download-artifact@v4
         with:
@@ -255,8 +163,6 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/PhotoSort-macos-arm64.dmg
-            artifacts/PhotoSort-macos-x64.dmg
-            artifacts/PhotoSort-macos-universal.dmg
             artifacts/PhotoSort-windows-x64.exe
             artifacts/PhotoSort-windows-arm64.exe
             artifacts/PhotoSort-windows-universal.zip
