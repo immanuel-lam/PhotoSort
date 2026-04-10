@@ -40,8 +40,9 @@ LOG_FILENAME      = "photosort-log.csv"
 UNDO_SH_FILENAME  = "photosort-undo.sh"
 UNDO_BAT_FILENAME = "photosort-undo.bat"
 
-ProgressCallback    = Callable[[int, int, FileRecord], None]
+ProgressCallback     = Callable[[int, int, FileRecord], None]
 ScanProgressCallback = Callable[[int], None]
+ConfirmCallback      = Callable[[int, int], bool]  # (file_count, total_bytes) -> proceed
 
 
 # ── Skip list ─────────────────────────────────────────────────────────────────
@@ -295,6 +296,7 @@ def sort_files(
     on_progress: Optional[ProgressCallback] = None,
     on_scan_progress: Optional[ScanProgressCallback] = None,
     pause_event: Optional[threading.Event] = None,
+    on_confirm: Optional[ConfirmCallback] = None,
 ) -> SortResult:
     """
     Two-pass sort:
@@ -328,6 +330,17 @@ def sort_files(
             else:
                 kept.append(f)
         all_files = kept
+
+    # ── Confirmation gate ─────────────────────────────────────────────────────
+    if on_confirm:
+        total_bytes = 0
+        for f in all_files:
+            try:
+                total_bytes += f.stat().st_size
+            except OSError:
+                pass
+        if not on_confirm(len(all_files), total_bytes):
+            return result  # caller declined — return empty result
 
     photos, videos = _split_photos_videos(all_files)
     ordered = photos + videos

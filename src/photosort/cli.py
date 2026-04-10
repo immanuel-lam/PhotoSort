@@ -133,6 +133,14 @@ Examples:
             "Also causes reports to be written during --dry-run."
         ),
     )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help=(
+            "After scanning, print file count and total size then require "
+            "typing YES before proceeding. Works for both dry and live runs."
+        ),
+    )
     return parser
 
 
@@ -154,6 +162,35 @@ def _parse_priority(raw: str) -> list[DateSource]:
     if DateSource.MODIFIED not in result:
         result.append(DateSource.MODIFIED)
     return result
+
+
+# ── Confirm callback ──────────────────────────────────────────────────────────
+
+def _fmt_size(n: int) -> str:
+    for unit, threshold in (("TB", 1_000_000_000_000), ("GB", 1_000_000_000), ("MB", 1_000_000)):
+        if n >= threshold:
+            return f"{n / threshold:.1f} {unit}"
+    return f"{n / 1_000:.1f} KB"
+
+
+def _make_confirm_callback(dry_run: bool):
+    """
+    Returns an on_confirm(file_count, total_bytes) -> bool callback.
+    Prints a summary and requires the user to type YES (case-insensitive) to proceed.
+    """
+    def callback(file_count: int, total_bytes: int) -> bool:
+        mode = "DRY RUN" if dry_run else "LIVE RUN"
+        size_str = _fmt_size(total_bytes)
+        print(f"\n  Scan complete: {file_count:,} media file(s)  |  {size_str}")
+        if not dry_run:
+            print(f"  Files will be MOVED from source. This cannot be undone without the undo script.")
+        print(f"\n  Type YES to continue [{mode}], or anything else to abort: ", end="", flush=True)
+        answer = input().strip()
+        if answer.upper() != "YES":
+            print("  Aborted.")
+            return False
+        return True
+    return callback
 
 
 # ── Progress callback ─────────────────────────────────────────────────────────
@@ -269,10 +306,13 @@ def main() -> None:
         print(f"\r  Scanning… {count:,} files found", end="", flush=True)
         _total[0] = count
 
+    confirm_cb = _make_confirm_callback(args.dry_run) if args.confirm else None
+
     result = sort_files(
         config,
         on_progress=_make_progress_callback(_total),
         on_scan_progress=_on_scan,
+        on_confirm=confirm_cb,
     )
     total = result.total_files
     print(f"\r  Found {total:,} media file(s).{' ' * 20}")  # overwrite scan line
