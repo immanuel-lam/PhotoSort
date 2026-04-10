@@ -35,6 +35,66 @@ REPORT_FILENAME           = "photosort-unmatched-report.txt"
 MISC_REPORT_FILENAME      = "photosort-misc-report.txt"
 DUPLICATE_REPORT_FILENAME = "photosort-duplicate-report.txt"
 
+# Rank for sorting special folders to the bottom of the tree (after device folders)
+_SPECIAL_FOLDER_RANK: dict[str, int] = {
+    "misc":                  100,
+    SCREENSHOTS_FOLDER:      101,
+    UNMATCHED_VIDEO_FOLDER:  102,
+}
+
+
+def build_file_count_tree_lines(
+    destination: Path,
+    records: Optional[list["FileRecord"]] = None,
+) -> list[str]:
+    """
+    Return indented lines showing file count per top-level destination folder.
+
+    Device folders are listed first (alphabetical), then misc / screenshots /
+    unmatched-videos at the end.  When *records* is provided the counts are
+    derived from dest_path (works for dry runs); otherwise the filesystem is
+    scanned.
+    """
+    counts: dict[str, int] = defaultdict(int)
+
+    if records is not None:
+        for rec in records:
+            if rec.error or not rec.dest_path:
+                continue
+            try:
+                rel = rec.dest_path.relative_to(destination)
+            except ValueError:
+                continue
+            if rel.parts:
+                counts[rel.parts[0]] += 1
+    else:
+        if not destination.exists():
+            return []
+        for top_dir in destination.iterdir():
+            if not top_dir.is_dir():
+                continue
+            n = sum(
+                1 for f in top_dir.rglob("*")
+                if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS
+            )
+            if n:
+                counts[top_dir.name] = n
+
+    if not counts:
+        return []
+
+    sorted_folders = sorted(
+        counts.keys(),
+        key=lambda x: (_SPECIAL_FOLDER_RANK.get(x, 0), x),
+    )
+
+    lines = [f"  {destination.name}/"]
+    last_idx = len(sorted_folders) - 1
+    for i, folder in enumerate(sorted_folders):
+        connector = "└── " if i == last_idx else "├── "
+        lines.append(f"  {connector}{folder}/  {counts[folder]:>5} file(s)")
+    return lines
+
 
 # ── Date path extraction ──────────────────────────────────────────────────────
 
@@ -171,7 +231,8 @@ def generate_misc_report(
             return None
         device_index = _build_device_date_index_from_records(records)
         lines = _build_misc_report_lines_from_records(
-            misc_records, screenshots_records, device_index, destination, dry_run
+            misc_records, screenshots_records, device_index, destination, dry_run,
+            all_records=records,
         )
     else:
         misc_dir        = destination / "misc"
@@ -393,19 +454,20 @@ def _build_misc_report_lines_from_records(
     device_index: dict[str, dict[str, int]],
     destination: Path,
     dry_run: bool,
+    all_records: Optional[list["FileRecord"]] = None,
 ) -> list[str]:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mode_note = "  [DRY RUN]" if dry_run else ""
     W = 62
 
+    tree_lines = build_file_count_tree_lines(destination, all_records)
     lines = [
         "PhotoSort — Misc & Screenshots Report",
         f"Generated  : {timestamp}{mode_note}",
         f"Destination: {destination}",
         "=" * W,
         "",
-        f"  misc/          {len(misc_records):>5} file(s)",
-        f"  screenshots/   {len(screenshots_records):>5} file(s)",
+    ] + tree_lines + [
         "",
         "=" * W,
         "",
@@ -529,14 +591,14 @@ def _build_misc_report_lines(
     mode_note = "  [DRY RUN]" if dry_run else ""
     W = 62
 
+    tree_lines = build_file_count_tree_lines(destination)
     lines = [
         "PhotoSort — Misc & Screenshots Report",
         f"Generated  : {timestamp}{mode_note}",
         f"Destination: {destination}",
         "=" * W,
         "",
-        f"  misc/          {len(misc_files):>5} file(s)",
-        f"  screenshots/   {len(screenshots_files):>5} file(s)",
+    ] + tree_lines + [
         "",
         "=" * W,
         "",

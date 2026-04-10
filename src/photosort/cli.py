@@ -427,10 +427,12 @@ def main() -> None:
     print(f"  Date sources — " + "  ".join(
         f"{k.upper()}: {v}" for k, v in result.by_source.items() if v
     ))
-    if result.by_device:
-        print(f"  Devices — " + "  ".join(
-            f"{k}: {v}" for k, v in sorted(result.by_device.items())
-        ))
+    from photosort.report import build_file_count_tree_lines
+    tree_lines = build_file_count_tree_lines(destination, result.records)
+    if tree_lines:
+        print()
+        for line in tree_lines:
+            print(line)
     if result.proximity_warnings:
         print(f"\n  Possible false matches (proximity >{_CONFIDENT_MINUTES} min):")
         for rec in result.records:
