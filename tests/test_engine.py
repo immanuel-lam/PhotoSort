@@ -15,7 +15,7 @@ from photosort.models import DateSource, SortConfig
 # ── scan_media_files ──────────────────────────────────────────────────────────
 
 def test_scan_finds_media(tmp_photos: Path):
-    files = scan_media_files(tmp_photos)
+    files, _ = scan_media_files(tmp_photos)
     names = [f.name for f in files]
     assert "IMG_20240715_083012.jpg" in names
     assert "VID_20230101_120000.mp4" in names
@@ -26,12 +26,12 @@ def test_scan_recursive(tmp_path: Path):
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "IMG_20240101_000000.jpg").touch()
-    files = scan_media_files(tmp_path)
+    files, _ = scan_media_files(tmp_path)
     assert len(files) == 1
 
 
 def test_scan_empty_dir(tmp_path: Path):
-    assert scan_media_files(tmp_path) == []
+    assert scan_media_files(tmp_path)[0] == []
 
 
 # ── compute_destination ───────────────────────────────────────────────────────
