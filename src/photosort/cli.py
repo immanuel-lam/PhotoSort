@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -193,9 +194,59 @@ def _make_confirm_callback(dry_run: bool):
     return callback
 
 
+# ── Sticky progress bar ───────────────────────────────────────────────────────
+
+_FILL  = '█' if _UTF8 else '#'
+_EMPTY = '░' if _UTF8 else '-'
+
+
+class _StickyBar:
+    """
+    Maintains a progress bar pinned to the last terminal line.
+    Log lines scroll above it; the bar is redrawn after every print.
+    """
+
+    def __init__(self):
+        self._drawn = False
+
+    def _width(self) -> int:
+        return shutil.get_terminal_size((80, 24)).columns
+
+    def clear(self):
+        """Erase the bar line so normal output can scroll past it."""
+        if self._drawn:
+            w = self._width()
+            sys.stdout.write(f"\r{' ' * w}\r")
+            sys.stdout.flush()
+            self._drawn = False
+
+    def draw(self, current: int, total: int):
+        """(Re)draw the bar on the current line without a trailing newline."""
+        if total == 0:
+            return
+        pct  = current / total
+        suffix = f" {pct*100:5.1f}%  {current:,}/{total:,}"
+        w    = self._width()
+        bar_w = max(4, w - len(suffix) - 2)  # 2 for [ ]
+        filled = int(bar_w * pct)
+        bar  = f"[{_FILL * filled}{_EMPTY * (bar_w - filled)}]{suffix}"
+        sys.stdout.write(f"\r{bar[:w]}")
+        sys.stdout.flush()
+        self._drawn = True
+
+    def print_line(self, line: str):
+        """Clear bar → print a log line → redraw bar."""
+        self.clear()
+        print(line)
+
+    def finish(self):
+        """Clear the bar permanently (call before summary output)."""
+        self.clear()
+
+
 # ── Progress callback ─────────────────────────────────────────────────────────
 
-def _make_progress_callback(total_ref):
+def _make_progress_callback(total_ref, bar: _StickyBar):
     """
     total_ref is either an int or a [int] list (updated live during scan).
     Using a list lets the CLI update the denominator once scanning finishes.
@@ -205,7 +256,8 @@ def _make_progress_callback(total_ref):
         total = total_ref[0] if isinstance(total_ref, list) else total_ref
         pad   = len(str(total))
         if record.error:
-            print(f"[{current:>{pad}}/{total}] {_ERR_ICON} ERROR {record.source_path.name}: {record.error}")
+            bar.print_line(f"[{current:>{pad}}/{total}] {_ERR_ICON} ERROR {record.source_path.name}: {record.error}")
+            bar.draw(current, total)
             return
 
         if record.is_duplicate:
@@ -225,10 +277,11 @@ def _make_progress_callback(total_ref):
 
         hash_snippet = f"  [{record.sha256[:8]}…]" if record.sha256 else ""
         dest_str = str(record.dest_path) if record.dest_path else "?"
-        print(
+        bar.print_line(
             f"[{current:>{pad}}/{total}] {icon} {tag}  {record.source_path.name}"
             f"\n{'':>{pad+2}}   → {dest_str}{hash_snippet}"
         )
+        bar.draw(current, total)
 
     return callback
 
@@ -308,12 +361,15 @@ def main() -> None:
 
     confirm_cb = _make_confirm_callback(args.dry_run) if args.confirm else None
 
+    bar = _StickyBar()
+
     result = sort_files(
         config,
-        on_progress=_make_progress_callback(_total),
+        on_progress=_make_progress_callback(_total, bar),
         on_scan_progress=_on_scan,
         on_confirm=confirm_cb,
     )
+    bar.finish()
     total = result.total_files
     print(f"\r  Found {total:,} media file(s).{' ' * 20}")  # overwrite scan line
     print()
