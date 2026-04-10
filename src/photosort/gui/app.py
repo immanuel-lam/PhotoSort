@@ -10,7 +10,7 @@ from typing import Optional
 
 import customtkinter as ctk
 
-from photosort.engine import MISC_FOLDER, scan_media_files
+from photosort.engine import CHECKPOINT_FILENAME, MISC_FOLDER, _load_checkpoint, scan_media_files
 from photosort.gui.widgets import DateFormatSelector, FolderPicker, PrioritySelector, ProximityWindowSelector
 from photosort.gui.worker import SortWorker
 from photosort.models import FileRecord, SortConfig, SortResult
@@ -37,6 +37,7 @@ class App(ctk.CTk):
 
         self._worker: Optional[SortWorker] = None
         self._total_media = 0
+        self._has_checkpoint = False   # True when output folder has a checkpoint file
 
         # Timing state
         self._sort_start_time: Optional[float] = None
@@ -95,7 +96,7 @@ class App(ctk.CTk):
 
         # ── Output folder ─────────────────────────────────────────────────────
         self._output_picker = FolderPicker(
-            outer, label="Output Folder", on_change=lambda _: self._update_cli_cmd()
+            outer, label="Output Folder", on_change=self._on_output_change
         )
         self._output_picker.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         row += 1
@@ -347,6 +348,21 @@ class App(ctk.CTk):
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
+    def _on_output_change(self, path: Path):
+        self._update_cli_cmd()
+        cp = _load_checkpoint(path / CHECKPOINT_FILENAME)
+        if cp:
+            self._has_checkpoint = True
+            processed = len(cp.get("processed_paths", []))
+            self._output_picker.set_status(
+                f"Checkpoint found — {processed:,} files already processed. "
+                "Click Sort Files to resume.",
+                color=("#e07b00", "#f0a040"),
+            )
+        else:
+            self._has_checkpoint = False
+            self._output_picker.set_status("", color="gray")
+
     def _on_input_change_and_cmd(self, path: Path):
         self._update_cli_cmd()
         self._on_input_change(path)
@@ -398,6 +414,26 @@ class App(ctk.CTk):
             ):
                 return
 
+        do_resume = False
+        if self._has_checkpoint:
+            cp = _load_checkpoint(dst / CHECKPOINT_FILENAME)
+            if cp and cp.get("source") == str(src) and cp.get("destination") == str(dst):
+                processed = len(cp.get("processed_paths", []))
+                do_resume = messagebox.askyesno(
+                    "PhotoSort — Resume Previous Sort?",
+                    f"A checkpoint was found with {processed:,} files already processed.\n\n"
+                    "Resume from where it left off?\n\n"
+                    "Yes = Resume  /  No = Start fresh (checkpoint will be deleted)",
+                )
+                if not do_resume:
+                    # Delete stale checkpoint so we start clean
+                    try:
+                        (dst / CHECKPOINT_FILENAME).unlink()
+                    except OSError:
+                        pass
+                    self._has_checkpoint = False
+                    self._output_picker.set_status("", color="gray")
+
         config = SortConfig(
             source=src,
             destination=dst,
@@ -408,7 +444,7 @@ class App(ctk.CTk):
             workers=workers,
         )
 
-        self._start_sort(config)
+        self._start_sort(config, resume=do_resume)
 
     def _on_pause_click(self):
         if self._worker is None:
@@ -428,7 +464,7 @@ class App(ctk.CTk):
                 hover_color=("#c06800", "#a05500"),
             )
 
-    def _start_sort(self, config: SortConfig):
+    def _start_sort(self, config: SortConfig, resume: bool = False):
         self._sort_btn.configure(state="disabled", text="Sorting…")
         self._pause_btn.configure(state="normal", text="Pause")
 
@@ -456,6 +492,7 @@ class App(ctk.CTk):
             on_complete=self._on_complete,
             on_error=self._on_worker_error,
             on_scan_progress=self._on_scan_progress,
+            resume=resume,
         )
         self._worker.start()
 
@@ -537,6 +574,24 @@ class App(ctk.CTk):
         self._elapsed_label.configure(text=f"Completed in {self._fmt_duration(elapsed)}")
         self._eta_label.configure(text="")
 
+        if result.interrupted:
+            processed = len(result.records)
+            self._summary_label.configure(
+                text=f"Interrupted — {processed:,} file(s) processed. "
+                "Checkpoint saved. Click Sort Files to resume."
+            )
+            self._has_checkpoint = True
+            dst = self._output_picker.get()
+            if dst:
+                self._output_picker.set_status(
+                    f"Checkpoint saved — {processed:,} files processed. "
+                    "Click Sort Files to resume.",
+                    color=("#e07b00", "#f0a040"),
+                )
+            self._reset_buttons()
+            return
+
+        self._has_checkpoint = False
         self._progress_bar.set(1)
         action = "Would move" if result.moved == 0 and result.total_files > 0 else "Moved"
 

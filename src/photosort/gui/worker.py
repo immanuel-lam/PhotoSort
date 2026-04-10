@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
-from photosort.engine import sort_files
+from photosort.engine import CHECKPOINT_FILENAME, sort_files
 from photosort.models import FileRecord, SortConfig, SortResult
 
 
@@ -19,12 +20,18 @@ class SortWorker:
         on_complete: Callable[[SortResult], None],
         on_error: Optional[Callable[[Exception], None]] = None,
         on_scan_progress: Optional[Callable[[int], None]] = None,
+        resume: bool = False,
+        checkpoint_path: Optional[Path] = None,
+        checkpoint_interval: int = 500,
     ):
-        self._config           = config
-        self._on_progress      = on_progress
-        self._on_complete      = on_complete
-        self._on_error         = on_error
-        self._on_scan_progress = on_scan_progress
+        self._config              = config
+        self._on_progress         = on_progress
+        self._on_complete         = on_complete
+        self._on_error            = on_error
+        self._on_scan_progress    = on_scan_progress
+        self._resume              = resume
+        self._checkpoint_path     = checkpoint_path
+        self._checkpoint_interval = checkpoint_interval
         self._thread: Optional[threading.Thread] = None
 
         # Pause event: set = running, cleared = paused
@@ -56,6 +63,9 @@ class SortWorker:
                 on_progress=self._on_progress,
                 on_scan_progress=self._on_scan_progress,
                 pause_event=self._pause_event,
+                checkpoint_path=self._checkpoint_path,
+                resume=self._resume,
+                checkpoint_interval=self._checkpoint_interval,
             )
             self._on_complete(result)
         except Exception as exc:
