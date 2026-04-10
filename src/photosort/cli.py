@@ -124,6 +124,15 @@ Examples:
             "4+ recommended for SSDs or network shares (SMB/NAS)."
         ),
     )
+    parser.add_argument(
+        "--report-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write post-sort reports to this folder instead of the destination. "
+            "Also causes reports to be written during --dry-run."
+        ),
+    )
     return parser
 
 
@@ -218,12 +227,16 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    report_dir = Path(args.report_dir).expanduser().resolve() if args.report_dir else None
+
     mode = "DRY RUN (no files will be moved)" if args.dry_run else "LIVE RUN"
     print(f"\n{_BAR_HEAVY*62}")
     print(f"  PhotoSort  [{mode}]")
     print(f"{_BAR_HEAVY*62}")
     print(f"  Source      : {source}")
     print(f"  Destination : {destination}")
+    if report_dir:
+        print(f"  Report dir  : {report_dir}")
     prox = args.proximity_window
     print(f"  Format      : {args.format}")
     print(f"  Priority    : {' → '.join(s.value for s in priority)}")
@@ -309,20 +322,27 @@ def main() -> None:
         generate_misc_report, MISC_REPORT_FILENAME,
         generate_duplicate_report, DUPLICATE_REPORT_FILENAME,
     )
-    report_path = generate_unmatched_report(destination, dry_run=args.dry_run)
+    # Pass result.records so reports work on dry runs too.
+    # Pass report_dir when --report-dir was specified.
+    _recs = result.records
+
+    report_path = generate_unmatched_report(
+        destination, dry_run=args.dry_run, records=_recs, report_dir=report_dir
+    )
     if report_path:
-        label = f"[DRY RUN] Would write → {REPORT_FILENAME}" if args.dry_run else str(report_path)
-        print(f"\n  Unmatched video report → {label}")
+        print(f"\n  Unmatched video report → {report_path}")
 
-    dup_report_path = generate_duplicate_report(destination, dry_run=args.dry_run)
+    dup_report_path = generate_duplicate_report(
+        destination, dry_run=args.dry_run, records=_recs, report_dir=report_dir
+    )
     if dup_report_path:
-        label = f"[DRY RUN] Would write → {DUPLICATE_REPORT_FILENAME}" if args.dry_run else str(dup_report_path)
-        print(f"  Duplicate report       → {label}")
+        print(f"  Duplicate report       → {dup_report_path}")
 
-    misc_report_path = generate_misc_report(destination, dry_run=args.dry_run)
+    misc_report_path = generate_misc_report(
+        destination, dry_run=args.dry_run, records=_recs, report_dir=report_dir
+    )
     if misc_report_path:
-        label = f"[DRY RUN] Would write → {MISC_REPORT_FILENAME}" if args.dry_run else str(misc_report_path)
-        print(f"  Misc report           → {label}")
+        print(f"  Misc report           → {misc_report_path}")
 
     if not args.dry_run and result.undo_log:
         print(f"  Undo scripts          → {UNDO_SH_FILENAME}  /  {UNDO_BAT_FILENAME}")

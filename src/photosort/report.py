@@ -3,6 +3,15 @@ Post-sort reports:
 
   generate_unmatched_report  — unmatched videos with device recommendations
   generate_misc_report       — summary of misc/ and screenshots/ contents
+  generate_duplicate_report  — files routed to duplicates/ subfolders
+
+All three functions accept an optional *records* list.  When provided the
+reports are generated entirely from in-memory data (no filesystem scan),
+which means they work correctly on dry runs too.  When *records* is None
+the functions fall back to scanning the destination folder (live-run
+behaviour from previous versions).
+
+An optional *report_dir* overrides where the .txt files are written.
 """
 
 from __future__ import annotations
@@ -11,10 +20,13 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from photosort.constants import ALL_EXTENSIONS, PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 from photosort.models import SCREENSHOTS_FOLDER, UNMATCHED_VIDEO_FOLDER
+
+if TYPE_CHECKING:
+    from photosort.models import FileRecord
 
 # Match any YYYY/YYYY-MM/YYYY-MM-DD date path segments inside a full path
 _DATE_RE = re.compile(r'(\d{4})[/\\](\d{4}-\d{2})[/\\](\d{4}-\d{2}-\d{2})')
@@ -32,7 +44,15 @@ def _extract_date_from_path(path: Path) -> Optional[str]:
     return m.group(3) if m else None
 
 
-# ── Device activity scanning ──────────────────────────────────────────────────
+def _date_from_record(rec: "FileRecord") -> Optional[str]:
+    if rec.date:
+        return rec.date.strftime("%Y-%m-%d")
+    if rec.dest_path:
+        return _extract_date_from_path(rec.dest_path)
+    return None
+
+
+# ── Device activity index ─────────────────────────────────────────────────────
 
 def _build_device_date_index(destination: Path) -> dict[str, dict[str, int]]:
     """
@@ -48,7 +68,6 @@ def _build_device_date_index(destination: Path) -> dict[str, dict[str, int]]:
             continue
         if device_dir.name == UNMATCHED_VIDEO_FOLDER:
             continue
-        # duplicates/ subfolder — skip for counting
         for f in device_dir.rglob("*"):
             if not f.is_file():
                 continue
@@ -61,39 +80,165 @@ def _build_device_date_index(destination: Path) -> dict[str, dict[str, int]]:
     return index
 
 
+def _build_device_date_index_from_records(
+    records: list["FileRecord"],
+) -> dict[str, dict[str, int]]:
+    """Same as _build_device_date_index but built from in-memory records."""
+    index: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for rec in records:
+        if rec.error or not rec.device:
+            continue
+        if rec.source_path.suffix.lower() not in PHOTO_EXTENSIONS:
+            continue
+        date = _date_from_record(rec)
+        if date:
+            index[rec.device][date] += 1
+    return index
+
+
 # ── Report generation ─────────────────────────────────────────────────────────
 
 def generate_unmatched_report(
     destination: Path,
     dry_run: bool = False,
+    records: Optional[list["FileRecord"]] = None,
+    report_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """
     Generate a plain-text report of unmatched videos with device recommendations.
 
-    Returns the path to the written report file, or None if there are no
-    unmatched videos or the destination doesn't exist.
-    Does nothing on a dry run.
+    When *records* is provided (recommended for dry runs), the report is built
+    entirely from in-memory data.  Otherwise the destination folder is scanned.
+    Returns the path to the written file, or None if there are no unmatched videos.
     """
-    unmatched_dir = destination / UNMATCHED_VIDEO_FOLDER
-    if not unmatched_dir.exists():
-        return None
+    if records is not None:
+        unmatched_videos = [
+            rec for rec in records
+            if not rec.error
+            and rec.source_path.suffix.lower() in VIDEO_EXTENSIONS
+            and rec.dest_path
+            and UNMATCHED_VIDEO_FOLDER in rec.dest_path.parts
+        ]
+        if not unmatched_videos:
+            return None
+        device_index = _build_device_date_index_from_records(records)
+        lines = _build_report_lines_from_records(unmatched_videos, device_index, destination, dry_run)
+    else:
+        unmatched_dir = destination / UNMATCHED_VIDEO_FOLDER
+        if not unmatched_dir.exists():
+            return None
+        unmatched_paths = sorted(
+            f for f in unmatched_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+        )
+        if not unmatched_paths:
+            return None
+        device_index = _build_device_date_index(destination)
+        lines = _build_report_lines(unmatched_paths, device_index, destination, dry_run)
 
-    unmatched_videos = sorted(
-        f for f in unmatched_dir.rglob("*")
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
-    )
-    if not unmatched_videos:
-        return None
-
-    device_index = _build_device_date_index(destination)
-    lines = _build_report_lines(unmatched_videos, device_index, destination, dry_run)
-
-    report_path = destination / REPORT_FILENAME
-    if not dry_run:
+    out_dir = report_dir if report_dir else destination
+    report_path = out_dir / REPORT_FILENAME
+    if not dry_run or report_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
         report_path.write_text("\n".join(lines), encoding="utf-8")
 
     return report_path
 
+
+def generate_misc_report(
+    destination: Path,
+    dry_run: bool = False,
+    records: Optional[list["FileRecord"]] = None,
+    report_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Generate a plain-text summary of misc/ and screenshots/ contents.
+    Returns the report path, or None if both folders are empty/absent.
+    """
+    if records is not None:
+        misc_records = [
+            rec for rec in records
+            if not rec.error and rec.dest_path
+            and "misc" in rec.dest_path.parts
+            and SCREENSHOTS_FOLDER not in rec.dest_path.parts
+        ]
+        screenshots_records = [
+            rec for rec in records
+            if not rec.error and rec.dest_path
+            and SCREENSHOTS_FOLDER in rec.dest_path.parts
+        ]
+        if not misc_records and not screenshots_records:
+            return None
+        device_index = _build_device_date_index_from_records(records)
+        lines = _build_misc_report_lines_from_records(
+            misc_records, screenshots_records, device_index, destination, dry_run
+        )
+    else:
+        misc_dir        = destination / "misc"
+        screenshots_dir = destination / SCREENSHOTS_FOLDER
+        misc_files        = _collect_files(misc_dir)
+        screenshots_files = _collect_files(screenshots_dir)
+        if not misc_files and not screenshots_files:
+            return None
+        device_index = _build_device_date_index(destination)
+        lines = _build_misc_report_lines(
+            misc_files, screenshots_files, device_index, destination, dry_run
+        )
+
+    out_dir = report_dir if report_dir else destination
+    report_path = out_dir / MISC_REPORT_FILENAME
+    if not dry_run or report_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+
+    return report_path
+
+
+def generate_duplicate_report(
+    destination: Path,
+    dry_run: bool = False,
+    records: Optional[list["FileRecord"]] = None,
+    report_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Generate a plain-text report of all files routed to duplicates/ subfolders.
+    Returns the report path, or None if there are no duplicates.
+    """
+    if records is not None:
+        dup_records = [rec for rec in records if rec.is_duplicate and not rec.error]
+        if not dup_records:
+            return None
+        lines = _build_duplicate_report_lines_from_records(dup_records, destination, dry_run)
+    else:
+        if not destination.exists():
+            return None
+        dup_dirs = [
+            d / "duplicates"
+            for d in destination.iterdir()
+            if d.is_dir() and (d / "duplicates").exists()
+        ]
+        if not dup_dirs:
+            return None
+        groups: dict[str, list[tuple[Path, str]]] = defaultdict(list)
+        for dup_root in dup_dirs:
+            device = dup_root.parent.name
+            for f in dup_root.rglob("*"):
+                if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS:
+                    groups[f.name].append((f, device))
+        if not groups:
+            return None
+        lines = _build_duplicate_report_lines(groups, destination, dry_run)
+
+    out_dir = report_dir if report_dir else destination
+    report_path = out_dir / DUPLICATE_REPORT_FILENAME
+    if not dry_run or report_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+
+    return report_path
+
+
+# ── Report builders (filesystem-based, legacy) ────────────────────────────────
 
 def _build_report_lines(
     videos: list[Path],
@@ -102,7 +247,7 @@ def _build_report_lines(
     dry_run: bool,
 ) -> list[str]:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    mode_note = "  [DRY RUN — report not written to disk]" if dry_run else ""
+    mode_note = "  [DRY RUN]" if dry_run else ""
 
     lines = [
         "PhotoSort — Unmatched Video Report",
@@ -121,85 +266,247 @@ def _build_report_lines(
     for video in videos:
         date = _extract_date_from_path(video)
         rel  = video.relative_to(destination)
-
         lines.append(f"  {video.name}")
         lines.append(f"  Path : {rel}")
         lines.append(f"  Date : {date or 'unknown'}")
-
-        if date:
-            # Find devices that have photos on this exact date
-            activity: list[tuple[str, int]] = [
-                (device, counts[date])
-                for device, counts in device_index.items()
-                if date in counts
-            ]
-            activity.sort(key=lambda x: x[1], reverse=True)
-
-            if activity:
-                lines.append("  Devices active on this date:")
-                for device, count in activity:
-                    lines.append(f"    {device:<30}  {count} photo(s)")
-                best_device, best_count = activity[0]
-                lines.append(f"  Best guess : {best_device}  ({best_count} photo(s) that day)")
-            else:
-                # No exact date match — broaden to same month
-                month = date[:7]  # YYYY-MM
-                monthly: list[tuple[str, int]] = []
-                for device, counts in device_index.items():
-                    total = sum(v for k, v in counts.items() if k.startswith(month))
-                    if total:
-                        monthly.append((device, total))
-                monthly.sort(key=lambda x: x[1], reverse=True)
-
-                if monthly:
-                    lines.append(f"  No devices active on {date} — checking same month ({month}):")
-                    for device, count in monthly:
-                        lines.append(f"    {device:<30}  {count} photo(s) that month")
-                    best_device, best_count = monthly[0]
-                    lines.append(f"  Best guess : {best_device}  ({best_count} photo(s) in {month})")
-                else:
-                    lines.append("  No device activity found on this date or month.")
-                    lines.append("  Best guess : unknown")
-        else:
-            lines.append("  Could not determine date from path.")
-            lines.append("  Best guess : unknown")
-
+        lines += _device_recommendation_lines(date, device_index)
         lines.append("")
 
-    lines.append("=" * 62)
-    lines.append("End of report")
+    lines += ["=" * 62, "End of report"]
     return lines
 
 
-# ── Misc report ───────────────────────────────────────────────────────────────
-
-def generate_misc_report(
+def _build_duplicate_report_lines(
+    groups: dict[str, list[tuple[Path, str]]],
     destination: Path,
-    dry_run: bool = False,
-) -> Optional[Path]:
-    """
-    Generate a plain-text summary of misc/ and screenshots/ contents.
-    Returns the report path, or None if both folders are empty/absent.
-    """
-    misc_dir        = destination / "misc"
-    screenshots_dir = destination / SCREENSHOTS_FOLDER
+    dry_run: bool,
+) -> list[str]:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode_note = "  [DRY RUN]" if dry_run else ""
+    W = 62
+    total_dups = sum(len(v) for v in groups.values())
+    lines = [
+        "PhotoSort — Duplicate Report",
+        f"Generated  : {timestamp}{mode_note}",
+        f"Destination: {destination}",
+        "=" * W,
+        "",
+        f"  {total_dups} duplicate file(s) across {len(groups)} unique filename(s).",
+        "  These are exact SHA256 matches of files already in their device folder.",
+        "  Safe to delete the duplicates/ subfolders if you don't need them.",
+        "",
+        "=" * W,
+        "",
+    ]
+    for name in sorted(groups):
+        copies = groups[name]
+        lines.append(f"  {name}  ({len(copies)} duplicate copy/copies)")
+        for path, device in sorted(copies, key=lambda x: str(x[0])):
+            rel = path.relative_to(destination)
+            lines.append(f"    [{device}]  {rel}")
+        lines.append("")
+    lines += ["=" * W, "End of report"]
+    return lines
 
-    misc_files        = _collect_files(misc_dir)
-    screenshots_files = _collect_files(screenshots_dir)
 
-    if not misc_files and not screenshots_files:
-        return None
+# ── Report builders (records-based, used for dry runs) ───────────────────────
 
-    device_index = _build_device_date_index(destination)
-    lines = _build_misc_report_lines(
-        misc_files, screenshots_files, device_index, destination, dry_run
-    )
+def _build_report_lines_from_records(
+    unmatched: list["FileRecord"],
+    device_index: dict[str, dict[str, int]],
+    destination: Path,
+    dry_run: bool,
+) -> list[str]:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode_note = "  [DRY RUN]" if dry_run else ""
 
-    report_path = destination / MISC_REPORT_FILENAME
-    if not dry_run:
-        report_path.write_text("\n".join(lines), encoding="utf-8")
+    lines = [
+        "PhotoSort — Unmatched Video Report",
+        f"Generated : {timestamp}{mode_note}",
+        f"Destination: {destination}",
+        "=" * 62,
+        "",
+        f"  {len(unmatched)} video(s) could not be matched to a device.",
+        "  For each, the devices most active on that date are listed.",
+        "  'Best guess' = device with the most photos taken that day.",
+        "",
+        "=" * 62,
+        "",
+    ]
 
-    return report_path
+    for rec in unmatched:
+        date = _date_from_record(rec)
+        dest_str = str(rec.dest_path) if rec.dest_path else "?"
+        lines.append(f"  {rec.source_path.name}")
+        lines.append(f"  Path : {dest_str}")
+        lines.append(f"  Date : {date or 'unknown'}")
+        lines += _device_recommendation_lines(date, device_index)
+        lines.append("")
+
+    lines += ["=" * 62, "End of report"]
+    return lines
+
+
+def _build_duplicate_report_lines_from_records(
+    dup_records: list["FileRecord"],
+    destination: Path,
+    dry_run: bool,
+) -> list[str]:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode_note = "  [DRY RUN]" if dry_run else ""
+    W = 62
+
+    groups: dict[str, list["FileRecord"]] = defaultdict(list)
+    for rec in dup_records:
+        groups[rec.source_path.name].append(rec)
+
+    lines = [
+        "PhotoSort — Duplicate Report",
+        f"Generated  : {timestamp}{mode_note}",
+        f"Destination: {destination}",
+        "=" * W,
+        "",
+        f"  {len(dup_records)} duplicate file(s) across {len(groups)} unique filename(s).",
+        "  These are exact SHA256 matches of files already in their device folder.",
+        "  Safe to delete the duplicates/ subfolders if you don't need them.",
+        "",
+        "=" * W,
+        "",
+    ]
+
+    for name in sorted(groups):
+        copies = groups[name]
+        lines.append(f"  {name}  ({len(copies)} duplicate copy/copies)")
+        for rec in sorted(copies, key=lambda r: str(r.dest_path)):
+            device = rec.device or "unknown"
+            dest_str = str(rec.dest_path) if rec.dest_path else "?"
+            lines.append(f"    [{device}]  {dest_str}")
+        lines.append("")
+
+    lines += ["=" * W, "End of report"]
+    return lines
+
+
+def _build_misc_report_lines_from_records(
+    misc_records: list["FileRecord"],
+    screenshots_records: list["FileRecord"],
+    device_index: dict[str, dict[str, int]],
+    destination: Path,
+    dry_run: bool,
+) -> list[str]:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode_note = "  [DRY RUN]" if dry_run else ""
+    W = 62
+
+    lines = [
+        "PhotoSort — Misc & Screenshots Report",
+        f"Generated  : {timestamp}{mode_note}",
+        f"Destination: {destination}",
+        "=" * W,
+        "",
+        f"  misc/          {len(misc_records):>5} file(s)",
+        f"  screenshots/   {len(screenshots_records):>5} file(s)",
+        "",
+        "=" * W,
+        "",
+    ]
+
+    if misc_records:
+        lines += [
+            "  MISC/",
+            "  Files that had no EXIF device info and no recognisable",
+            "  screenshot/screen-recording filename pattern.",
+            "",
+        ]
+        by_date: dict[str, list["FileRecord"]] = defaultdict(list)
+        for rec in misc_records:
+            by_date[_date_from_record(rec) or "unknown"].append(rec)
+        for date in sorted(by_date):
+            group = by_date[date]
+            rec_lines = _device_recommendation_lines(date if date != "unknown" else None, device_index)
+            guess = rec_lines[0].strip() if rec_lines else "→ unknown"
+            lines.append(f"  {date}  ({len(group)} file(s))  {guess}")
+            for rec in group[:5]:
+                ext = rec.source_path.suffix.lower()
+                kind = "video" if ext in VIDEO_EXTENSIONS else "photo"
+                lines.append(f"    [{kind}]  {rec.source_path.name}")
+            if len(group) > 5:
+                lines.append(f"    … and {len(group) - 5} more")
+        lines.append("")
+
+    if screenshots_records:
+        lines += [
+            "  SCREENSHOTS/",
+            "  Files identified as screenshots or screen recordings",
+            "  by filename pattern.",
+            "",
+        ]
+        photo_count = sum(1 for r in screenshots_records if r.source_path.suffix.lower() in PHOTO_EXTENSIONS)
+        video_count = sum(1 for r in screenshots_records if r.source_path.suffix.lower() in VIDEO_EXTENSIONS)
+        lines.append(f"  {photo_count} screenshot(s)   {video_count} screen recording(s)")
+        lines.append("")
+
+        by_date2: dict[str, list["FileRecord"]] = defaultdict(list)
+        for rec in screenshots_records:
+            by_date2[_date_from_record(rec) or "unknown"].append(rec)
+        for date in sorted(by_date2):
+            group = by_date2[date]
+            lines.append(f"  {date}  ({len(group)} file(s))")
+            for rec in group[:5]:
+                lines.append(f"    {rec.source_path.name}")
+            if len(group) > 5:
+                lines.append(f"    … and {len(group) - 5} more")
+        lines.append("")
+
+    lines += ["=" * W, "End of report"]
+    return lines
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _device_recommendation_lines(
+    date: Optional[str],
+    device_index: dict[str, dict[str, int]],
+) -> list[str]:
+    """Return 1-3 lines with device activity and best-guess recommendation."""
+    if not date:
+        return ["  Best guess : unknown  (no date info)"]
+
+    activity: list[tuple[str, int]] = [
+        (device, counts[date])
+        for device, counts in device_index.items()
+        if date in counts
+    ]
+    activity.sort(key=lambda x: x[1], reverse=True)
+
+    if activity:
+        lines = ["  Devices active on this date:"]
+        for device, count in activity:
+            lines.append(f"    {device:<30}  {count} photo(s)")
+        best_device, best_count = activity[0]
+        lines.append(f"  Best guess : {best_device}  ({best_count} photo(s) that day)")
+        return lines
+
+    month = date[:7]
+    monthly: list[tuple[str, int]] = []
+    for device, counts in device_index.items():
+        total = sum(v for k, v in counts.items() if k.startswith(month))
+        if total:
+            monthly.append((device, total))
+    monthly.sort(key=lambda x: x[1], reverse=True)
+
+    if monthly:
+        lines = [f"  No devices active on {date} — checking same month ({month}):"]
+        for device, count in monthly:
+            lines.append(f"    {device:<30}  {count} photo(s) that month")
+        best_device, best_count = monthly[0]
+        lines.append(f"  Best guess : {best_device}  ({best_count} photo(s) in {month})")
+        return lines
+
+    return [
+        "  No device activity found on this date or month.",
+        "  Best guess : unknown",
+    ]
 
 
 def _collect_files(folder: Path) -> list[Path]:
@@ -219,7 +526,7 @@ def _build_misc_report_lines(
     dry_run: bool,
 ) -> list[str]:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    mode_note = "  [DRY RUN — report not written to disk]" if dry_run else ""
+    mode_note = "  [DRY RUN]" if dry_run else ""
     W = 62
 
     lines = [
@@ -228,10 +535,6 @@ def _build_misc_report_lines(
         f"Destination: {destination}",
         "=" * W,
         "",
-    ]
-
-    # ── Overview ──────────────────────────────────────────────────────────────
-    lines += [
         f"  misc/          {len(misc_files):>5} file(s)",
         f"  screenshots/   {len(screenshots_files):>5} file(s)",
         "",
@@ -239,7 +542,6 @@ def _build_misc_report_lines(
         "",
     ]
 
-    # ── misc/ section ─────────────────────────────────────────────────────────
     if misc_files:
         lines += [
             "  MISC/",
@@ -250,7 +552,6 @@ def _build_misc_report_lines(
         lines += _section_lines(misc_files, device_index, destination)
         lines.append("")
 
-    # ── screenshots/ section ──────────────────────────────────────────────────
     if screenshots_files:
         lines += [
             "  SCREENSHOTS/",
@@ -258,7 +559,6 @@ def _build_misc_report_lines(
             "  by filename pattern.",
             "",
         ]
-        # For screenshots, just list by type — no device recommendation needed
         photo_count = sum(1 for f in screenshots_files if f.suffix.lower() in PHOTO_EXTENSIONS)
         video_count = sum(1 for f in screenshots_files if f.suffix.lower() in VIDEO_EXTENSIONS)
         lines.append(f"  {photo_count} screenshot(s)   {video_count} screen recording(s)")
@@ -281,73 +581,6 @@ def _build_misc_report_lines(
     return lines
 
 
-# ── Duplicate report ─────────────────────────────────────────────────────────
-
-def generate_duplicate_report(
-    destination: Path,
-    dry_run: bool = False,
-) -> Optional[Path]:
-    """
-    Generate a plain-text report of all files routed to duplicates/ subfolders.
-    Returns the report path, or None if there are no duplicates.
-    """
-    if not destination.exists():
-        return None
-    dup_dirs = [
-        d / "duplicates"
-        for d in destination.iterdir()
-        if d.is_dir() and (d / "duplicates").exists()
-    ]
-    if not dup_dirs:
-        return None
-
-    # Collect all duplicate files: {original_name: [(Dn_path, device)]}
-    groups: dict[str, list[tuple[Path, str]]] = defaultdict(list)
-    for dup_root in dup_dirs:
-        device = dup_root.parent.name
-        for f in dup_root.rglob("*"):
-            if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS:
-                groups[f.name].append((f, device))
-
-    if not groups:
-        return None
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    mode_note = "  [DRY RUN — report not written to disk]" if dry_run else ""
-    W = 62
-
-    total_dups = sum(len(v) for v in groups.values())
-    lines = [
-        "PhotoSort — Duplicate Report",
-        f"Generated  : {timestamp}{mode_note}",
-        f"Destination: {destination}",
-        "=" * W,
-        "",
-        f"  {total_dups} duplicate file(s) across {len(groups)} unique filename(s).",
-        "  These are exact SHA256 matches of files already in their device folder.",
-        "  Safe to delete the duplicates/ subfolders if you don't need them.",
-        "",
-        "=" * W,
-        "",
-    ]
-
-    for name in sorted(groups):
-        copies = groups[name]
-        lines.append(f"  {name}  ({len(copies)} duplicate copy/copies)")
-        for path, device in sorted(copies, key=lambda x: str(x[0])):
-            rel = path.relative_to(destination)
-            lines.append(f"    [{device}]  {rel}")
-        lines.append("")
-
-    lines += ["=" * W, "End of report"]
-
-    report_path = destination / DUPLICATE_REPORT_FILENAME
-    if not dry_run:
-        report_path.write_text("\n".join(lines), encoding="utf-8")
-
-    return report_path
-
-
 def _section_lines(
     files: list[Path],
     device_index: dict[str, dict[str, int]],
@@ -362,35 +595,8 @@ def _section_lines(
     lines = []
     for date in sorted(by_date):
         group = by_date[date]
-
-        # Find best device for this date
-        if date != "unknown":
-            activity = sorted(
-                ((dev, counts[date]) for dev, counts in device_index.items() if date in counts),
-                key=lambda x: x[1], reverse=True,
-            )
-            if not activity:
-                month = date[:7]
-                activity = sorted(
-                    (
-                        (dev, sum(v for k, v in counts.items() if k.startswith(month)))
-                        for dev, counts in device_index.items()
-                        if any(k.startswith(month) for k in counts)
-                    ),
-                    key=lambda x: x[1], reverse=True,
-                )
-                guess_note = f"(same month {month})" if activity else ""
-            else:
-                guess_note = "(same day)"
-
-            if activity:
-                best_device, best_count = activity[0]
-                guess = f"→ {best_device}  {best_count} photo(s) {guess_note}"
-            else:
-                guess = "→ unknown  (no device activity near this date)"
-        else:
-            guess = "→ unknown  (no date info)"
-
+        rec_lines = _device_recommendation_lines(date if date != "unknown" else None, device_index)
+        guess = rec_lines[0].strip() if rec_lines else "→ unknown"
         lines.append(f"  {date}  ({len(group)} file(s))  {guess}")
         for f in group[:5]:
             ext = f.suffix.lower()
