@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import fnmatch
+import json
 import os
 import shutil
 import threading
@@ -36,9 +37,10 @@ from photosort.video_detect import (
 MISC_FOLDER = "misc"
 
 # Log file written to the destination after every live run
-LOG_FILENAME      = "photosort-log.csv"
-UNDO_SH_FILENAME  = "photosort-undo.sh"
-UNDO_BAT_FILENAME = "photosort-undo.bat"
+LOG_FILENAME        = "photosort-log.csv"
+UNDO_SH_FILENAME    = "photosort-undo.sh"
+UNDO_BAT_FILENAME   = "photosort-undo.bat"
+CHECKPOINT_FILENAME = "photosort-checkpoint.json"
 
 ProgressCallback     = Callable[[int, int, FileRecord], None]
 ScanProgressCallback = Callable[[int], None]
@@ -75,6 +77,63 @@ def _matches_skip(filepath: Path, source: Path, patterns: list[str]) -> bool:
         if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel, pat):
             return True
     return False
+
+
+# ── Checkpoint ────────────────────────────────────────────────────────────────
+
+def _write_checkpoint(
+    path: Path,
+    processed: set[str],
+    timeline: DeviceTimeline,
+    dest_registry: dict[Path, str],
+    result: SortResult,
+    config: SortConfig,
+) -> None:
+    """
+    Atomically write a checkpoint file so an interrupted run can be resumed.
+    Uses a .tmp write-then-rename to avoid leaving a corrupt file on disk.
+    """
+    data = {
+        "version": 1,
+        "source":      str(config.source),
+        "destination": str(config.destination),
+        "date_format": config.date_format,
+        "priority":    [s.value for s in config.priority],
+        "proximity_window_minutes": config.proximity_window_minutes,
+        # Files already processed (source paths)
+        "processed_paths": sorted(processed),
+        # DeviceTimeline — needed for video proximity matching on resume
+        "timeline_times":   [dt.isoformat() for dt in timeline._times],
+        "timeline_devices": list(timeline._devices),
+        # dest_registry — needed for duplicate detection on resume
+        "dest_registry": {str(k): v for k, v in dest_registry.items()},
+        # Accumulated stats so the final summary is correct
+        "result": {
+            "moved":               result.moved,
+            "duplicates":          result.duplicates,
+            "errors":              result.errors,
+            "skipped":             result.skipped,
+            "proximity_warnings":  result.proximity_warnings,
+            "by_source":           dict(result.by_source),
+            "by_device":           dict(result.by_device),
+            "by_extension":        dict(result.by_extension),
+        },
+        "undo_log": result.undo_log,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)   # atomic rename — avoids corrupt checkpoint on crash
+
+
+def _load_checkpoint(path: Path) -> Optional[dict]:
+    """Load and return a checkpoint dict, or None if missing / corrupt."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 # ── Undo log ───────────────────────────────────────────────────────────────────
@@ -300,6 +359,8 @@ def sort_files(
     on_scan_progress: Optional[ScanProgressCallback] = None,
     pause_event: Optional[threading.Event] = None,
     on_confirm: Optional[ConfirmCallback] = None,
+    checkpoint_path: Optional[Path] = None,
+    resume: bool = False,
 ) -> SortResult:
     """
     Two-pass sort:
@@ -345,27 +406,79 @@ def sort_files(
         if not on_confirm(len(all_files), non_media_count, total_bytes):
             return result  # caller declined — return empty result
 
+    # ── Resume: restore state from checkpoint ─────────────────────────────────
+    _processed: set[str] = set()   # source paths handled this run (or prior)
+
+    if resume and checkpoint_path:
+        cp = _load_checkpoint(checkpoint_path)
+        if cp:
+            if cp.get("source") != str(config.source) or cp.get("destination") != str(config.destination):
+                raise ValueError(
+                    "Checkpoint source/destination does not match current arguments.\n"
+                    f"  Checkpoint source : {cp.get('source')}\n"
+                    f"  Current source    : {config.source}"
+                )
+            _processed = set(cp.get("processed_paths", []))
+
+            # Restore DeviceTimeline
+            for iso, device in zip(cp.get("timeline_times", []), cp.get("timeline_devices", [])):
+                timeline._times.append(datetime.fromisoformat(iso))
+                timeline._devices.append(device)
+
+            # Restore dest_registry
+            for k, v in cp.get("dest_registry", {}).items():
+                dest_registry[Path(k)] = v
+
+            # Restore accumulated stats
+            r = cp.get("result", {})
+            result.moved              = r.get("moved", 0)
+            result.duplicates         = r.get("duplicates", 0)
+            result.errors             = r.get("errors", 0)
+            result.skipped            = max(result.skipped, r.get("skipped", 0))
+            result.proximity_warnings = r.get("proximity_warnings", 0)
+            result.by_source          = r.get("by_source", result.by_source)
+            result.by_device          = dict(r.get("by_device", {}))
+            result.by_extension       = dict(r.get("by_extension", {}))
+            result.undo_log           = [tuple(x) for x in cp.get("undo_log", [])]
+
+            # Filter already-done files
+            all_files = [f for f in all_files if str(f) not in _processed]
+
     photos, videos = _split_photos_videos(all_files)
     ordered = photos + videos
-    result.total_files = len(ordered)
+    # total_files = remaining files to process; add back already-done count
+    result.total_files = len(ordered) + len(_processed)
     total = result.total_files
 
     # ── Log file ──────────────────────────────────────────────────────────────
     log_file   = None
     log_writer = None
-    if not config.dry_run and total > 0:
+    if not config.dry_run and len(ordered) > 0:
         log_path = config.destination / LOG_FILENAME
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file   = open(log_path, "w", newline="", encoding="utf-8")
+        # Append on resume so prior entries are preserved
+        open_mode = "a" if resume and checkpoint_path else "w"
+        log_file   = open(log_path, open_mode, newline="", encoding="utf-8")
         log_writer = csv.writer(log_file)
-        log_writer.writerow([
-            "timestamp", "source", "destination",
-            "status", "device", "date_source", "sha256", "error",
-        ])
+        if open_mode == "w":
+            log_writer.writerow([
+                "timestamp", "source", "destination",
+                "status", "device", "date_source", "sha256", "error",
+            ])
 
     # ── Per-file processing ───────────────────────────────────────────────────
 
+    _stop_requested = threading.Event()  # set on Ctrl+C to drain workers cleanly
+
     def _do_one(filepath: Path, is_vid: bool) -> FileRecord:
+        if _stop_requested.is_set():
+            # Return a minimal error record so the file is NOT added to _processed
+            return FileRecord(
+                source_path=filepath, dest_path=None, date=None,
+                date_source=None, device=None, sha256=None,
+                is_duplicate=False, duplicate_index=0,
+                error="interrupted",
+            )
         if pause_event:
             pause_event.wait()
         return _process_file(
@@ -375,8 +488,13 @@ def sort_files(
 
     def _record(record: FileRecord, is_vid: bool) -> None:
         """Accumulate result stats, write log row, fire progress callback."""
+        # Track processed files for checkpoint (only non-interrupted)
+        if record.error != "interrupted":
+            _processed.add(str(record.source_path))
+
         if record.error:
-            result.errors += 1
+            if record.error != "interrupted":
+                result.errors += 1
         elif record.is_duplicate:
             result.duplicates += 1
             result.moved += 1
@@ -391,10 +509,11 @@ def sort_files(
                 result.by_source.get(record.date_source.value, 0) + 1
             )
 
-        device_key = record.device or (UNMATCHED_VIDEO_FOLDER if is_vid else MISC_FOLDER)
-        result.by_device[device_key] = result.by_device.get(device_key, 0) + 1
+        if record.error != "interrupted":
+            device_key = record.device or (UNMATCHED_VIDEO_FOLDER if is_vid else MISC_FOLDER)
+            result.by_device[device_key] = result.by_device.get(device_key, 0) + 1
 
-        # ── By-extension stats (non-error files only) ──────────────────────
+        # ── By-extension stats (non-error, non-interrupted files only) ──────
         if not record.error:
             ext = record.source_path.suffix.lstrip(".").upper() or "NO_EXT"
             result.by_extension[ext] = result.by_extension.get(ext, 0) + 1
@@ -403,9 +522,10 @@ def sort_files(
         if not config.dry_run and not record.error and record.dest_path:
             result.undo_log.append((str(record.source_path), str(record.dest_path)))
 
-        result.records.append(record)
+        if record.error != "interrupted":
+            result.records.append(record)
 
-        if log_writer:
+        if log_writer and record.error != "interrupted":
             status = ("error" if record.error
                       else "duplicate" if record.is_duplicate
                       else "moved")
@@ -424,7 +544,7 @@ def sort_files(
             _counter[0] += 1
             idx = _counter[0]
 
-        if on_progress:
+        if on_progress and record.error != "interrupted":
             on_progress(idx, total, record)
 
     # ── Two passes ────────────────────────────────────────────────────────────
@@ -441,6 +561,12 @@ def sort_files(
             else:
                 for filepath in pass_files:
                     _record(_do_one(filepath, is_vid), is_vid)
+    except KeyboardInterrupt:
+        _stop_requested.set()
+        result.interrupted = True
+        # Write checkpoint so the run can be resumed (live runs only)
+        if checkpoint_path and not config.dry_run and _processed:
+            _write_checkpoint(checkpoint_path, _processed, timeline, dest_registry, result, config)
     finally:
         if log_file:
             log_file.close()
@@ -448,6 +574,13 @@ def sort_files(
     # ── Undo log files ────────────────────────────────────────────────────────
     if not config.dry_run and result.undo_log:
         _write_undo_logs(config.destination, result.undo_log)
+
+    # ── Delete checkpoint on clean completion ─────────────────────────────────
+    if not result.interrupted and checkpoint_path and checkpoint_path.exists():
+        try:
+            checkpoint_path.unlink()
+        except OSError:
+            pass
 
     return result
 

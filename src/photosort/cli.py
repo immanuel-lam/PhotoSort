@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from photosort.engine import (
+    CHECKPOINT_FILENAME,
     MISC_FOLDER,
     UNDO_BAT_FILENAME,
     UNDO_SH_FILENAME,
@@ -140,6 +141,23 @@ Examples:
         help=(
             "After scanning, print file count and total size then require "
             "typing YES before proceeding. Works for both dry and live runs."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume an interrupted run using the checkpoint file saved on Ctrl+C. "
+            "Already-processed files are skipped; state is restored exactly."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        metavar="FILE",
+        help=(
+            f"Path to the checkpoint file (default: <destination>/{CHECKPOINT_FILENAME}). "
+            "Useful when the destination is read-only."
         ),
     )
     return parser
@@ -317,9 +335,16 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    report_dir = Path(args.report_dir).expanduser().resolve() if args.report_dir else None
+    report_dir      = Path(args.report_dir).expanduser().resolve() if args.report_dir else None
+    checkpoint_path = (
+        Path(args.checkpoint).expanduser().resolve()
+        if args.checkpoint
+        else destination / CHECKPOINT_FILENAME
+    )
 
     mode = "DRY RUN (no files will be moved)" if args.dry_run else "LIVE RUN"
+    if args.resume:
+        mode += " [RESUMING]"
     print(f"\n{_BAR_HEAVY*62}")
     print(f"  PhotoSort  [{mode}]")
     print(f"{_BAR_HEAVY*62}")
@@ -368,11 +393,18 @@ def main() -> None:
         on_progress=_make_progress_callback(_total, bar),
         on_scan_progress=_on_scan,
         on_confirm=confirm_cb,
+        checkpoint_path=checkpoint_path,
+        resume=args.resume,
     )
     bar.finish()
     total = result.total_files
     print(f"\r  Found {total:,} media file(s).{' ' * 20}")  # overwrite scan line
     print()
+
+    if result.interrupted:
+        _warn = "⚠ " if _UTF8 else "[!]"
+        print(f"  {_warn} Interrupted — checkpoint saved to {checkpoint_path}")
+        print(f"  Resume with: --resume (add --checkpoint {checkpoint_path} if needed)\n")
 
     if total == 0:
         print("No media files found in source folder.")

@@ -86,3 +86,4 @@ class SortResult:
     by_extension: dict[str, int] = field(default_factory=dict)
     undo_log: list[tuple[str, str]] = field(default_factory=list)
     records: list[FileRecord] = field(default_factory=list)
+    interrupted: bool = False               # True if the run was cut short by Ctrl+C
