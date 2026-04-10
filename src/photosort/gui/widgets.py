@@ -68,8 +68,9 @@ _CUSTOM_LABEL = "Custom…"
 class DateFormatSelector(ctk.CTkFrame):
     """Dropdown of date format presets with an optional custom entry."""
 
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, on_change: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._on_change = on_change
 
         ctk.CTkLabel(self, text="Date Format:", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, sticky="w", padx=(0, 12)
@@ -90,12 +91,15 @@ class DateFormatSelector(ctk.CTkFrame):
         self._custom_entry = ctk.CTkEntry(self, placeholder_text="e.g. %Y/%m/%d", width=220)
         self._custom_entry.grid(row=0, column=2, sticky="w", padx=(8, 0))
         self._custom_entry.grid_remove()
+        self._custom_entry.bind("<KeyRelease>", lambda _: self._on_change and self._on_change())
 
     def _on_select(self, choice: str):
         if choice == _CUSTOM_LABEL:
             self._custom_entry.grid()
         else:
             self._custom_entry.grid_remove()
+        if self._on_change:
+            self._on_change()
 
     def get(self) -> str:
         choice = self._combo.get()
@@ -109,8 +113,9 @@ class DateFormatSelector(ctk.CTkFrame):
 class PrioritySelector(ctk.CTkFrame):
     """Four source buttons with ↑↓ arrows to reorder date extraction priority."""
 
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, on_change: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._on_change = on_change
 
         ctk.CTkLabel(self, text="Sort Priority:", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, sticky="w", padx=(0, 12)
@@ -171,6 +176,8 @@ class PrioritySelector(ctk.CTkFrame):
         if 0 <= target < len(self._order):
             self._order[idx], self._order[target] = self._order[target], self._order[idx]
             self._render()
+            if self._on_change:
+                self._on_change()
 
     def get(self) -> list[DateSource]:
         return list(self._order)
@@ -184,8 +191,9 @@ class ProximityWindowSelector(ctk.CTkFrame):
     Shows 0 (disabled) through 120 minutes.
     """
 
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, on_change: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._on_change_cb = on_change
 
         ctk.CTkLabel(
             self, text="Video Proximity:", font=ctk.CTkFont(weight="bold")
@@ -213,6 +221,8 @@ class ProximityWindowSelector(ctk.CTkFrame):
     def _on_change(self, value):
         minutes = int(value)
         self._label.configure(text=self._format(minutes))
+        if self._on_change_cb:
+            self._on_change_cb()
 
     @staticmethod
     def _format(minutes: int) -> str:

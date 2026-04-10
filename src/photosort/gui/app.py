@@ -88,13 +88,15 @@ class App(ctk.CTk):
 
         # ── Input folder ──────────────────────────────────────────────────────
         self._input_picker = FolderPicker(
-            outer, label="Input Folder", on_change=self._on_input_change
+            outer, label="Input Folder", on_change=self._on_input_change_and_cmd
         )
         self._input_picker.grid(row=row, column=0, sticky="ew", pady=(0, 12))
         row += 1
 
         # ── Output folder ─────────────────────────────────────────────────────
-        self._output_picker = FolderPicker(outer, label="Output Folder")
+        self._output_picker = FolderPicker(
+            outer, label="Output Folder", on_change=lambda _: self._update_cli_cmd()
+        )
         self._output_picker.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         row += 1
 
@@ -109,13 +111,19 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=14, weight="bold"),
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 8))
 
-        self._date_fmt_selector = DateFormatSelector(options_card)
+        self._date_fmt_selector = DateFormatSelector(
+            options_card, on_change=self._update_cli_cmd
+        )
         self._date_fmt_selector.grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
 
-        self._priority_selector = PrioritySelector(options_card)
+        self._priority_selector = PrioritySelector(
+            options_card, on_change=self._update_cli_cmd
+        )
         self._priority_selector.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
 
-        self._proximity_selector = ProximityWindowSelector(options_card)
+        self._proximity_selector = ProximityWindowSelector(
+            options_card, on_change=self._update_cli_cmd
+        )
         self._proximity_selector.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 8))
 
         # Workers row
@@ -123,6 +131,7 @@ class App(ctk.CTk):
         workers_row.grid(row=4, column=0, sticky="w", padx=16, pady=(0, 8))
         ctk.CTkLabel(workers_row, text="Parallel workers:").pack(side="left", padx=(0, 8))
         self._workers_var = ctk.StringVar(value="1")
+        self._workers_var.trace_add("write", lambda *_: self._update_cli_cmd())
         ctk.CTkEntry(workers_row, textvariable=self._workers_var, width=48).pack(side="left")
         ctk.CTkLabel(
             workers_row, text="  (1 = safe for HDDs,  4+ for SSDs / network shares)",
@@ -132,10 +141,40 @@ class App(ctk.CTk):
         dry_row = ctk.CTkFrame(options_card, fg_color="transparent")
         dry_row.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 12))
         self._dry_run_var = ctk.BooleanVar(value=True)
+        self._dry_run_var.trace_add("write", lambda *_: self._update_cli_cmd())
         ctk.CTkCheckBox(
             dry_row, text="Dry Run (preview only — no files will be moved)",
             variable=self._dry_run_var,
         ).pack(side="left")
+
+        # ── CLI command bar ───────────────────────────────────────────────────
+        cli_card = ctk.CTkFrame(outer)
+        cli_card.grid(row=row, column=0, sticky="ew", pady=(0, 16))
+        cli_card.columnconfigure(1, weight=1)
+        row += 1
+
+        ctk.CTkLabel(
+            cli_card, text="CLI equivalent",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color="gray",
+        ).grid(row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 8))
+
+        self._cli_cmd_var = ctk.StringVar(value="python main.py <input> <output>")
+        cli_entry = ctk.CTkEntry(
+            cli_card, textvariable=self._cli_cmd_var,
+            font=ctk.CTkFont(family=_MONO_FONT, size=11),
+            state="readonly",
+            fg_color=("gray90", "gray20"),
+        )
+        cli_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(8, 8))
+
+        ctk.CTkButton(
+            cli_card, text="Copy", width=56, height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color=("gray78", "gray30"),
+            hover_color=("gray65", "gray42"),
+            text_color=("gray15", "gray90"),
+            command=self._copy_cli_cmd,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 12), pady=(8, 8))
 
         # ── Buttons row: Sort + Pause/Resume ─────────────────────────────────
         btn_row = ctk.CTkFrame(outer, fg_color="transparent")
@@ -234,6 +273,47 @@ class App(ctk.CTk):
         self._error_row_box    = row + 1
         self._outer = outer
 
+    # ── CLI command display ───────────────────────────────────────────────────
+
+    def _update_cli_cmd(self):
+        """Rebuild the CLI command string from current widget state."""
+        from photosort.models import DEFAULT_DATE_FORMAT, DEFAULT_PRIORITY
+        src = self._input_picker.get()
+        dst = self._output_picker.get()
+        src_str = str(src) if src else "<input>"
+        dst_str = str(dst) if dst else "<output>"
+
+        parts = ["python main.py", src_str, dst_str]
+
+        if self._dry_run_var.get():
+            parts.append("--dry-run")
+
+        fmt = self._date_fmt_selector.get()
+        if fmt != DEFAULT_DATE_FORMAT:
+            parts.append(f'--format "{fmt}"')
+
+        priority = self._priority_selector.get()
+        default_priority = DEFAULT_PRIORITY
+        if priority != default_priority:
+            parts.append("--priority " + ",".join(s.value for s in priority))
+
+        prox = self._proximity_selector.get()
+        if prox != 30:
+            parts.append(f"--proximity-window {prox}")
+
+        try:
+            workers = max(1, int(self._workers_var.get()))
+        except ValueError:
+            workers = 1
+        if workers != 1:
+            parts.append(f"--workers {workers}")
+
+        self._cli_cmd_var.set(" ".join(parts))
+
+    def _copy_cli_cmd(self):
+        self.clipboard_clear()
+        self.clipboard_append(self._cli_cmd_var.get())
+
     # ── Appearance toggle ─────────────────────────────────────────────────────
 
     def _cycle_appearance(self):
@@ -266,6 +346,10 @@ class App(ctk.CTk):
         return f"{h}h {m:02d}m {s:02d}s"
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _on_input_change_and_cmd(self, path: Path):
+        self._update_cli_cmd()
+        self._on_input_change(path)
 
     def _on_input_change(self, path: Path):
         self._input_picker.set_status("Scanning…", color="gray")
