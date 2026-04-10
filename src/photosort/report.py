@@ -442,6 +442,7 @@ def _build_duplicate_report_lines_from_records(
             device = rec.device or "unknown"
             dest_str = str(rec.dest_path) if rec.dest_path else "?"
             lines.append(f"    [{device}]  {dest_str}")
+            lines.append(f"      from: {rec.source_path}")
         lines.append("")
 
     lines += ["=" * W, "End of report"]
