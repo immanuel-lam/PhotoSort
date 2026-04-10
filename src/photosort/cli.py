@@ -175,15 +175,15 @@ def _fmt_size(n: int) -> str:
 
 def _make_confirm_callback(dry_run: bool):
     """
-    Returns an on_confirm(file_count, total_bytes) -> bool callback.
-    Prints a summary and requires the user to type YES (case-insensitive) to proceed.
+    Returns an on_confirm(media_count, non_media_count, total_bytes) -> bool callback.
+    Prints a summary and requires the user to type YES to proceed.
     """
-    def callback(file_count: int, total_bytes: int) -> bool:
+    def callback(media_count: int, non_media_count: int, total_bytes: int) -> bool:
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         size_str = _fmt_size(total_bytes)
-        print(f"\n  Scan complete: {file_count:,} media file(s)  |  {size_str}")
+        print(f"\n  Scan complete: {media_count:,} media file(s)  |  {non_media_count:,} non-media  |  {size_str}")
         if not dry_run:
-            print(f"  Files will be MOVED from source. This cannot be undone without the undo script.")
+            print("  Files will be MOVED from source. This cannot be undone without the undo script.")
         print(f"\n  Type YES to continue [{mode}], or anything else to abort: ", end="", flush=True)
         answer = input().strip()
         if answer.upper() != "YES":

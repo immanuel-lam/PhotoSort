@@ -78,13 +78,13 @@ class TestZeroByteFiles:
         """Empty .jpg file should still appear in scan results."""
         f = tmp_path / "empty.jpg"
         f.write_bytes(b"")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_zero_byte_mp4_is_scanned(self, tmp_path: Path):
         f = tmp_path / "empty.mp4"
         f.write_bytes(b"")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_sort_zero_byte_file_no_crash(self, tmp_path: Path):
@@ -121,7 +121,7 @@ class TestNoExtensionFiles:
         """Files without a recognised extension must be ignored by the scanner."""
         (tmp_path / "NOEXT").write_bytes(b"\xff\xd8\xff")
         (tmp_path / "someimage").write_bytes(b"\xff\xd8\xff")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert files == []
 
     def test_no_extension_alongside_valid(self, tmp_path: Path):
@@ -129,7 +129,7 @@ class TestNoExtensionFiles:
         (tmp_path / "NOEXT").write_bytes(b"data")
         valid = tmp_path / "photo.jpg"
         valid.write_bytes(b"\xff\xd8\xff")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert files == [valid]
 
 
@@ -144,7 +144,7 @@ class TestDeeplyNested:
         deep.mkdir(parents=True)
         f = deep / "IMG_20240715_083012.jpg"
         f.write_bytes(b"\xff\xd8\xff")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_scan_seven_levels_deep(self, tmp_path: Path):
@@ -152,7 +152,7 @@ class TestDeeplyNested:
         deep.mkdir(parents=True)
         f = deep / "VID_20230101_120000.mp4"
         f.write_bytes(b"\x00" * 8)
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_sort_deep_nested_files(self, tmp_path: Path):
@@ -347,19 +347,19 @@ class TestSpecialCharacterFilenames:
     def test_filename_with_spaces_scanned(self, tmp_path: Path):
         f = tmp_path / "My Photo 2024.jpg"
         f.write_bytes(b"\xff\xd8\xff")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_filename_with_unicode_scanned(self, tmp_path: Path):
         f = tmp_path / "Фото_20240715_083012.jpg"
         f.write_bytes(b"\xff\xd8\xff")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_filename_with_parentheses_scanned(self, tmp_path: Path):
         f = tmp_path / "Screenshot (1).png"
         f.write_bytes(b"\x89PNG\r\n")
-        files = scan_media_files(tmp_path)
+        files, _ = scan_media_files(tmp_path)
         assert f in files
 
     def test_sort_spaces_in_filename(self, tmp_path: Path):

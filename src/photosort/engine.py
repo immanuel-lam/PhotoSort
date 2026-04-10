@@ -42,7 +42,7 @@ UNDO_BAT_FILENAME = "photosort-undo.bat"
 
 ProgressCallback     = Callable[[int, int, FileRecord], None]
 ScanProgressCallback = Callable[[int], None]
-ConfirmCallback      = Callable[[int, int], bool]  # (file_count, total_bytes) -> proceed
+ConfirmCallback      = Callable[[int, int, int], bool]  # (media_count, non_media_count, total_bytes) -> proceed
 
 
 # ── Skip list ─────────────────────────────────────────────────────────────────
@@ -130,13 +130,14 @@ def _write_undo_logs(destination: Path, undo_log: list[tuple[str, str]]) -> None
 def scan_media_files(
     source: Path,
     on_progress: Optional[ScanProgressCallback] = None,
-) -> list[Path]:
+) -> tuple[list[Path], int]:
     """
-    Return all media files under *source* (recursive), sorted by path.
-    Calls on_progress(count) after each file found so callers can show a
-    live "Scanning… N files" counter without waiting for the full scan.
+    Return (media_files, non_media_count) for all files under *source* (recursive).
+    media_files is sorted by path.
+    Calls on_progress(count) after each media file found.
     """
     files: list[Path] = []
+    non_media = 0
     for dirpath, _, filenames in os.walk(source):
         for fname in filenames:
             p = Path(dirpath) / fname
@@ -144,7 +145,9 @@ def scan_media_files(
                 files.append(p)
                 if on_progress:
                     on_progress(len(files))
-    return sorted(files)
+            else:
+                non_media += 1
+    return sorted(files), non_media
 
 
 def _split_photos_videos(files: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -320,7 +323,7 @@ def sort_files(
     # ── Skip list ─────────────────────────────────────────────────────────────
     skip_patterns = _load_skip_patterns(config.source)
 
-    all_files = scan_media_files(config.source, on_scan_progress)
+    all_files, non_media_count = scan_media_files(config.source, on_scan_progress)
 
     if skip_patterns:
         kept: list[Path] = []
@@ -339,7 +342,7 @@ def sort_files(
                 total_bytes += f.stat().st_size
             except OSError:
                 pass
-        if not on_confirm(len(all_files), total_bytes):
+        if not on_confirm(len(all_files), non_media_count, total_bytes):
             return result  # caller declined — return empty result
 
     photos, videos = _split_photos_videos(all_files)

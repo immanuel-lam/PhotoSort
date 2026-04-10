@@ -358,7 +358,7 @@ class App(ctk.CTk):
     def _scan_input(self, path: Path):
         try:
             all_files   = [f for f in path.rglob("*") if f.is_file()]
-            media_files = scan_media_files(path)
+            media_files, _ = scan_media_files(path)
             self._total_media = len(media_files)
             self._input_picker.set_status(
                 f"{len(all_files):,} total files  |  {self._total_media:,} media files",
