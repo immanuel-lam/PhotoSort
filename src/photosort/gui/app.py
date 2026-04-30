@@ -138,8 +138,18 @@ class App(ctk.CTk):
             text_color="gray",
         ).pack(side="left", padx=(6, 0))
 
+        layout_row = ctk.CTkFrame(options_card, fg_color="transparent")
+        layout_row.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 8))
+        self._date_first_var = ctk.BooleanVar(value=False)
+        self._date_first_var.trace_add("write", lambda *_: self._update_cli_cmd())
+        ctk.CTkCheckBox(
+            layout_row,
+            text="Group by date first  (<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<device>/  instead of  <device>/<YYYY>/…)",
+            variable=self._date_first_var,
+        ).pack(side="left")
+
         dry_row = ctk.CTkFrame(options_card, fg_color="transparent")
-        dry_row.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 12))
+        dry_row.grid(row=6, column=0, sticky="w", padx=16, pady=(0, 12))
         self._dry_run_var = ctk.BooleanVar(value=True)
         self._dry_run_var.trace_add("write", lambda *_: self._update_cli_cmd())
         ctk.CTkCheckBox(
@@ -288,6 +298,9 @@ class App(ctk.CTk):
         if self._dry_run_var.get():
             parts.append("--dry-run")
 
+        if self._date_first_var.get():
+            parts.append("--date-first")
+
         fmt = self._date_fmt_selector.get()
         if fmt != DEFAULT_DATE_FORMAT:
             parts.append(f'--format "{fmt}"')
@@ -406,6 +419,7 @@ class App(ctk.CTk):
             priority=self._priority_selector.get(),
             proximity_window_minutes=self._proximity_selector.get(),
             workers=workers,
+            device_first=not self._date_first_var.get(),
         )
 
         self._start_sort(config)

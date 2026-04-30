@@ -100,6 +100,7 @@ def _write_checkpoint(
         "date_format": config.date_format,
         "priority":    [s.value for s in config.priority],
         "proximity_window_minutes": config.proximity_window_minutes,
+        "device_first": config.device_first,
         # Files already processed (source paths)
         "processed_paths": sorted(processed),
         # DeviceTimeline — needed for video proximity matching on resume
@@ -234,15 +235,19 @@ def compute_destination(
     device: Optional[str],
     date_format: str,
     base_dest: Path,
+    device_first: bool = True,
 ) -> Path:
     """
-    Build the intended destination path (before duplicate resolution):
-        <base_dest>/<device>/<date_path>/<filename>
+    Build the intended destination path (before duplicate resolution).
+    - device_first=True  (default): <base_dest>/<device>/<date_path>/<filename>
+    - device_first=False           : <base_dest>/<date_path>/<device>/<filename>
     Uses MISC_FOLDER when device is None.
     """
     folder = device if device else MISC_FOLDER
     date_path = _format_date_path(dt, date_format)
-    return base_dest / folder / date_path / filepath.name
+    if device_first:
+        return base_dest / folder / date_path / filepath.name
+    return base_dest / date_path / folder / filepath.name
 
 
 # ── Duplicate resolution ──────────────────────────────────────────────────────
@@ -253,6 +258,7 @@ def resolve_duplicate(
     dest_registry: dict[Path, str],
     base_dest: Path,
     dry_run: bool,
+    device_first: bool = True,
 ) -> tuple[Path, bool, int]:
     """
     Determine the final destination path, handling duplicates via lazy hashing.
@@ -296,7 +302,7 @@ def resolve_duplicate(
     if incoming_hash and existing_hash and incoming_hash == existing_hash:
         # True duplicate — route to duplicates/ Dn/
         dup_n = _next_duplicate_index(intended_dest, dest_registry)
-        dup_dest = _duplicate_path(intended_dest, base_dest, dup_n)
+        dup_dest = _duplicate_path(intended_dest, base_dest, dup_n, device_first)
         dest_registry[dup_dest] = incoming_hash
         return dup_dest, True, dup_n
 
@@ -306,18 +312,30 @@ def resolve_duplicate(
     return final, False, 0
 
 
-def _duplicate_path(intended_dest: Path, base_dest: Path, dup_n: int) -> Path:
+def _duplicate_path(
+    intended_dest: Path, base_dest: Path, dup_n: int, device_first: bool = True
+) -> Path:
     """
     Mirror the intended destination into the duplicates/ subtree with a Dn subfolder.
-    intended_dest:  <base_dest>/<device>/<date_path>/<filename>
-    result:         <base_dest>/<device>/duplicates/<date_path>/D{n}/<filename>
+
+    device_first=True:
+        <base_dest>/<device>/<date_path>/<filename>
+        →  <base_dest>/<device>/duplicates/<date_path>/D{n}/<filename>
+
+    device_first=False:
+        <base_dest>/<date_path>/<device>/<filename>
+        →  <base_dest>/<date_path>/<device>/duplicates/D{n}/<filename>
     """
     rel = intended_dest.relative_to(base_dest)
-    parts = rel.parts  # (device, *date_parts, filename)
-    device_part   = parts[0]
-    date_parts    = parts[1:-1]
+    parts = rel.parts
     filename_part = parts[-1]
-    return base_dest / device_part / "duplicates" / Path(*date_parts) / f"D{dup_n}" / filename_part
+    if device_first:
+        device_part = parts[0]
+        date_parts  = parts[1:-1]
+        return base_dest / device_part / "duplicates" / Path(*date_parts) / f"D{dup_n}" / filename_part
+    device_part = parts[-2]
+    date_parts  = parts[:-2]
+    return base_dest / Path(*date_parts) / device_part / "duplicates" / f"D{dup_n}" / filename_part
 
 
 def _next_duplicate_index(intended_dest: Path, dest_registry: dict[Path, str]) -> int:
@@ -634,22 +652,24 @@ def _process_file(
             else:
                 folder = MISC_FOLDER
 
-        intended = (
-            config.destination / folder
-            / _format_date_path(dt, config.date_format)
-            / filepath.name
-        )
+        date_path = _format_date_path(dt, config.date_format)
+        if config.device_first:
+            intended = config.destination / folder / date_path / filepath.name
+        else:
+            intended = config.destination / date_path / folder / filepath.name
 
         # Duplicate resolution and sha lookup must be atomic under the registry lock
         if registry_lock:
             with registry_lock:
                 final_path, is_dup, dup_idx = resolve_duplicate(
-                    intended, filepath, dest_registry, config.destination, config.dry_run
+                    intended, filepath, dest_registry, config.destination,
+                    config.dry_run, config.device_first,
                 )
                 sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
         else:
             final_path, is_dup, dup_idx = resolve_duplicate(
-                intended, filepath, dest_registry, config.destination, config.dry_run
+                intended, filepath, dest_registry, config.destination,
+                config.dry_run, config.device_first,
             )
             sha = dest_registry.get(final_path) or dest_registry.get(intended) or ""
 

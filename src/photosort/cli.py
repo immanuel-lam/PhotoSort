@@ -117,6 +117,14 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--date-first",
+        action="store_true",
+        help=(
+            "Group by date first, then device — i.e. <YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<device>/. "
+            "Default layout is <device>/<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -354,6 +362,7 @@ def main() -> None:
         print(f"  Report dir  : {report_dir}")
     prox = args.proximity_window
     print(f"  Format      : {args.format}")
+    print(f"  Layout      : {'date / device' if args.date_first else 'device / date'}")
     print(f"  Priority    : {' → '.join(s.value for s in priority)}")
     print(f"  Proximity   : {f'{prox} min (warnings >10 min)' if prox > 0 else 'disabled'}")
     workers = max(1, args.workers)
@@ -371,6 +380,7 @@ def main() -> None:
         priority=priority,
         proximity_window_minutes=prox,
         workers=workers,
+        device_first=not args.date_first,
     )
 
     # Scan with live progress, then sort

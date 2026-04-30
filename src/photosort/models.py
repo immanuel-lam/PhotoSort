@@ -50,6 +50,9 @@ class SortConfig:
     priority: list[DateSource] = field(default_factory=lambda: list(DEFAULT_PRIORITY))
     proximity_window_minutes: int = DEFAULT_PROXIMITY_WINDOW  # 0 = disabled
     workers: int = 1  # parallel threads; 1 = single-threaded (safe for HDDs)
+    # True  → <device>/<date_path>/<file>   (default, original layout)
+    # False → <date_path>/<device>/<file>   (group by date, device as leaf)
+    device_first: bool = True
 
 
 @dataclass

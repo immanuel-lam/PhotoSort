@@ -54,6 +54,43 @@ def test_compute_destination_misc(tmp_path: Path):
     assert dest.parts[-5] == MISC_FOLDER
 
 
+def test_compute_destination_date_first(tmp_path: Path):
+    from datetime import datetime
+    f = tmp_path / "IMG.jpg"
+    f.touch()
+    dt = datetime(2024, 7, 15)
+    dest = compute_destination(
+        f, dt, "ILCE-7M3", "%Y/%Y-%m/%Y-%m-%d", tmp_path / "out", device_first=False
+    )
+    assert dest == tmp_path / "out" / "2024" / "2024-07" / "2024-07-15" / "ILCE-7M3" / "IMG.jpg"
+
+
+def test_date_first_duplicates_routed_correctly(tmp_path: Path):
+    """Duplicates under date-first layout should land in <date>/<device>/duplicates/Dn/."""
+    src = tmp_path / "src"
+    sub1 = src / "a"
+    sub2 = src / "b"
+    sub1.mkdir(parents=True)
+    sub2.mkdir(parents=True)
+    out = tmp_path / "out"
+
+    content = b"\xff\xd8\xff" + b"\xCD" * 100
+    (sub1 / "IMG_20240715_083012.jpg").write_bytes(content)
+    (sub2 / "IMG_20240715_083012.jpg").write_bytes(content)
+
+    config = SortConfig(source=src, destination=out, dry_run=False, device_first=False)
+    result = sort_files(config)
+    dup_records = [r for r in result.records if r.is_duplicate]
+    assert len(dup_records) >= 1
+    for r in dup_records:
+        # date segments should appear before "duplicates"
+        parts = r.dest_path.relative_to(out).parts
+        dup_idx = parts.index("duplicates")
+        # Year/Month/Day come before duplicates; device sits immediately before it.
+        assert dup_idx >= 1
+        assert parts[0].isdigit()  # leading segment is the year
+
+
 # ── sort_files — dry run ──────────────────────────────────────────────────────
 
 def test_dry_run_moves_nothing(tmp_photos: Path, tmp_path: Path):
